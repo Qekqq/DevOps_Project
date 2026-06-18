@@ -106,7 +106,7 @@ services:
     restart: "no"
 
   kafka:
-    image: bitnami/kafka:3.7
+    image: bitnamilegacy/kafka:3.7
     container_name: devops_hw_4_kafka
     restart: unless-stopped
     environment:
