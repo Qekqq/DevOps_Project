@@ -4,6 +4,7 @@ set -eu
 
 VAULT_KV_MOUNT="${VAULT_KV_MOUNT:-secret}"
 VAULT_DB_SECRET_PATH="${VAULT_DB_SECRET_PATH:-database/postgres}"
+VAULT_KAFKA_SECRET_PATH="${VAULT_KAFKA_SECRET_PATH:-kafka/config}"
 
 if [ -z "${VAULT_ADDR:-}" ]; then
   echo "VAULT_ADDR is not set"
@@ -40,6 +41,21 @@ if [ -z "${POSTGRES_PASSWORD:-}" ]; then
   exit 1
 fi
 
+if [ -z "${KAFKA_BOOTSTRAP_SERVERS:-}" ]; then
+  echo "KAFKA_BOOTSTRAP_SERVERS is not set"
+  exit 1
+fi
+
+if [ -z "${KAFKA_PREDICTION_TOPIC:-}" ]; then
+  echo "KAFKA_PREDICTION_TOPIC is not set"
+  exit 1
+fi
+
+if [ -z "${KAFKA_CONSUMER_GROUP:-}" ]; then
+  echo "KAFKA_CONSUMER_GROUP is not set"
+  exit 1
+fi
+
 export VAULT_ADDR
 export VAULT_TOKEN
 
@@ -67,3 +83,12 @@ vault kv put "${VAULT_KV_MOUNT}/${VAULT_DB_SECRET_PATH}" \
   POSTGRES_PASSWORD="${POSTGRES_PASSWORD}"
 
 echo "PostgreSQL secrets were written to Vault"
+
+echo "Writing Kafka settings to Vault..."
+
+vault kv put "${VAULT_KV_MOUNT}/${VAULT_KAFKA_SECRET_PATH}" \
+  KAFKA_BOOTSTRAP_SERVERS="${KAFKA_BOOTSTRAP_SERVERS}" \
+  KAFKA_PREDICTION_TOPIC="${KAFKA_PREDICTION_TOPIC}" \
+  KAFKA_CONSUMER_GROUP="${KAFKA_CONSUMER_GROUP}"
+
+echo "Kafka settings were written to Vault"

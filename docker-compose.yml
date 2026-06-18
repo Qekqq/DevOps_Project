@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: devops_hw_3_api
+    container_name: devops_hw_4_api
     env_file:
       - .env
     environment:
@@ -11,6 +11,7 @@ services:
       VAULT_ADDR: http://vault:8200
       VAULT_KV_MOUNT: secret
       VAULT_DB_SECRET_PATH: database/postgres
+      VAULT_KAFKA_SECRET_PATH: kafka/config
     ports:
       - "8000:8000"
     depends_on:
@@ -20,11 +21,38 @@ services:
         condition: service_healthy
       vault-init:
         condition: service_completed_successfully
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
+  kafka-consumer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: devops_hw_4_kafka_consumer
+    env_file:
+      - .env
+    environment:
+      PYTHONUNBUFFERED: "1"
+      VAULT_ADDR: http://vault:8200
+      VAULT_KV_MOUNT: secret
+      VAULT_DB_SECRET_PATH: database/postgres
+      VAULT_KAFKA_SECRET_PATH: kafka/config
+    command: python -m src.kafka.consumer
+    depends_on:
+      db:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+      vault-init:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_healthy
     restart: unless-stopped
 
   db:
     image: postgres:16
-    container_name: devops_hw_3_db
+    container_name: devops_hw_4_db
     restart: unless-stopped
     env_file:
       - .env
@@ -41,7 +69,7 @@ services:
 
   vault:
     image: hashicorp/vault:1.17
-    container_name: devops_hw_3_vault
+    container_name: devops_hw_4_vault
     restart: unless-stopped
     cap_add:
       - IPC_LOCK
@@ -61,13 +89,14 @@ services:
 
   vault-init:
     image: hashicorp/vault:1.17
-    container_name: devops_hw_3_vault_init
+    container_name: devops_hw_4_vault_init
     env_file:
       - .env
     environment:
       VAULT_ADDR: http://vault:8200
       VAULT_KV_MOUNT: secret
       VAULT_DB_SECRET_PATH: database/postgres
+      VAULT_KAFKA_SECRET_PATH: kafka/config
     volumes:
       - ./vault/init-vault.sh:/vault/init-vault.sh:ro
     entrypoint: ["/bin/sh", "/vault/init-vault.sh"]
@@ -76,5 +105,31 @@ services:
         condition: service_healthy
     restart: "no"
 
+  kafka:
+    image: bitnami/kafka:3.7
+    container_name: devops_hw_4_kafka
+    restart: unless-stopped
+    environment:
+      KAFKA_CFG_NODE_ID: 1
+      KAFKA_CFG_PROCESS_ROLES: broker,controller
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CFG_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+    ports:
+      - "9092:9092"
+    volumes:
+      - kafka_data:/bitnami/kafka
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+
 volumes:
   pgdata:
+  kafka_data:

@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 env:
-  IMAGE_NAME: qekqq/devops_hw_3_api
+  IMAGE_NAME: qekqq/devops_hw_4_api
   IMAGE_TAG: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || 'latest' }}
 
 jobs:
@@ -87,7 +87,7 @@ jobs:
           services:
             diabetes-api:
               image: ${IMAGE_NAME}:${IMAGE_TAG}
-              container_name: devops_hw_3_api
+              container_name: devops_hw_4_api
               env_file:
                 - .env
               environment:
@@ -107,7 +107,7 @@ jobs:
 
             db:
               image: postgres:16
-              container_name: devops_hw_3_db
+              container_name: devops_hw_4_db
               env_file:
                 - .env
               ports:
@@ -122,7 +122,7 @@ jobs:
 
             vault:
               image: hashicorp/vault:1.17
-              container_name: devops_hw_3_vault
+              container_name: devops_hw_4_vault
               cap_add:
                 - IPC_LOCK
               env_file:
@@ -141,7 +141,7 @@ jobs:
 
             vault-init:
               image: hashicorp/vault:1.17
-              container_name: devops_hw_3_vault_init
+              container_name: devops_hw_4_vault_init
               env_file:
                 - .env
               environment:
@@ -177,7 +177,7 @@ jobs:
             sleep 2
           done
 
-          docker logs devops_hw_3_api
+          docker logs devops_hw_4_api
           exit 1
 
       - name: Run API, Vault and database functional tests
@@ -263,12 +263,12 @@ jobs:
       - name: Show API logs
         if: always()
         run: |
-          docker logs devops_hw_3_api || true
+          docker logs devops_hw_4_api || true
 
       - name: Show Vault logs
         if: always()
         run: |
-          docker logs devops_hw_3_vault || true
+          docker logs devops_hw_4_vault || true
 
       - name: Stop services
         if: always()
