@@ -1,35 +1,35 @@
-# DevOps HW 3 — Diabetes Prediction API with Hashicorp Vault
+# DevOps HW 4 — Diabetes Prediction API with Apache Kafka
 
 ## 1. Описание проекта
 
-Проект выполнен в рамках лабораторной работы №3 по дисциплине «Инфраструктура больших данных».
+Проект выполнен в рамках лабораторной работы №4 по дисциплине «Devops».
 
-Тема лабораторной работы: **«Размещение секретов в хранилище»**.
+Тема лабораторной работы: **«Интеграция Apache Kafka сервиса»**.
 
-Цель работы — реализовать хранение секретов в специализированном хранилище и настроить взаимодействие сервиса машинного обучения с этим хранилищем.
+Цель работы — интегрировать брокер сообщений Apache Kafka в сервис и реализовать асинхронную передачу результатов работы модели с последующим сохранением в базу данных.
 
-В качестве хранилища секретов используется **Hashicorp Vault**.
+В качестве брокера сообщений используется **Apache Kafka** (режим KRaft, без ZooKeeper), а для хранения секретов — **Hashicorp Vault**.
 
-Проект основан на лабораторной работе №2. В предыдущей версии был реализован FastAPI-сервис машинного обучения, PostgreSQL-база данных, сохранение результатов прогнозирования и CI/CD pipeline. В лабораторной работе №3 проект был расширен: параметры подключения к PostgreSQL теперь размещаются в Vault, а API-сервис получает их из Vault при обращении к базе данных.
+Проект основан на лабораторной работе №3. В предыдущей версии был реализован FastAPI-сервис машинного обучения, PostgreSQL-база данных, хранение секретов в Hashicorp Vault и CI/CD pipeline. В лабораторной работе №4 проект был расширен: после выполнения прогноза API публикует результат в Apache Kafka (роль Producer), а отдельный сервис-потребитель (Consumer) читает сообщения из топика и сохраняет результат в PostgreSQL.
 
 ## 2. Ссылки
 
 GitHub repository:
 
 ```text
-https://github.com/Qekqq/devops_hw_3
+https://github.com/Qekqq/devops_hw_4
 ```
 
 DockerHub image:
 
 ```text
-https://hub.docker.com/repository/docker/qekqq/devops_hw_3_api/general
+https://hub.docker.com/repository/docker/qekqq/devops_hw_4_api/general
 ```
 
 Docker image name:
 
 ```text
-qekqq/devops_hw_3_api
+qekqq/devops_hw_4_api
 ```
 
 ## 3. Основная функциональность
@@ -37,15 +37,17 @@ qekqq/devops_hw_3_api
 В проекте реализовано:
 
 * FastAPI API-сервис для инференса ML-модели;
+* публикация результата прогноза в Apache Kafka (Kafka Producer);
+* отдельный сервис-потребитель `kafka-consumer` (Kafka Consumer);
 * PostgreSQL-база данных для хранения данных проекта;
-* Hashicorp Vault для хранения секретов подключения к БД;
-* init-контейнер `vault-init` для записи секретов PostgreSQL в Vault;
-* получение параметров подключения к PostgreSQL через Vault;
-* сохранение результата работы модели в таблицу `prediction_history`;
+* Hashicorp Vault для хранения секретов подключения к БД и Kafka;
+* init-контейнер `vault-init` для записи секретов PostgreSQL и Kafka в Vault;
+* получение параметров подключения к PostgreSQL и Kafka через Vault;
+* асинхронное сохранение результата работы модели в таблицу `prediction_history` сервисом-потребителем;
 * загрузка обработанного датасета в таблицы `datasets` и `dataset_samples`;
-* Docker Compose для запуска API, PostgreSQL, Vault и vault-init;
+* Docker Compose для запуска API, Kafka Consumer, Apache Kafka, PostgreSQL, Vault и vault-init;
 * CI pipeline для тестирования, сборки Docker image и публикации в DockerHub;
-* CD pipeline для запуска контейнеров и функционального тестирования;
+* CD pipeline для запуска контейнеров и функционального тестирования с Kafka;
 * автоматизированные тесты через pytest.
 
 ## 4. Стек технологий
@@ -59,6 +61,8 @@ qekqq/devops_hw_3_api
 * pandas;
 * numpy;
 * scikit-learn;
+* Apache Kafka;
+* kafka-python;
 * SQLAlchemy;
 * psycopg2-binary;
 * hvac;
@@ -72,27 +76,31 @@ qekqq/devops_hw_3_api
 
 ## 5. Архитектура проекта
 
-Архитектура лабораторной работы №3:
+Архитектура лабораторной работы №4:
 
 ```text
-GitHub Secrets / local .env
-        ↓
-vault-init
-        ↓
-Hashicorp Vault
-        ↓
-FastAPI service
-        ↓
-PostgreSQL
+              Hashicorp Vault
+            (секреты Kafka и БД)
+                    ↑   ↑
+                    │   │
+Client → FastAPI (/predict) ──[Producer]──→ Apache Kafka
+                                          (topic: prediction-results)
+                                                    │
+                                                    ▼
+                                            kafka-consumer
+                                              [Consumer]
+                                                    │
+                                                    ▼
+                                               PostgreSQL
 ```
 
 Логика работы:
 
-1. PostgreSQL запускается как отдельный контейнер.
+1. PostgreSQL и Apache Kafka запускаются как отдельные контейнеры.
 2. Vault запускается как отдельный контейнер в dev-режиме.
-3. Контейнер `vault-init` получает параметры PostgreSQL из переменных окружения и записывает их в Vault.
-4. FastAPI-сервис при обращении к БД читает параметры подключения из Vault.
-5. После этого API подключается к PostgreSQL и сохраняет результат работы модели.
+3. Контейнер `vault-init` записывает в Vault параметры подключения к PostgreSQL и Kafka.
+4. FastAPI-сервис выполняет прогноз и публикует результат в топик Kafka (роль Producer), читая параметры подключения из Vault.
+5. Сервис-потребитель `kafka-consumer` читает сообщения из топика и сохраняет результат в PostgreSQL.
 
 ## 6. Структура проекта
 
@@ -122,6 +130,10 @@ PostgreSQL
 │   │   ├── load_dataset.py
 │   │   ├── models.py
 │   │   └── repositories.py
+│   ├── kafka/
+│   │   ├── __init__.py
+│   │   ├── producer.py
+│   │   └── consumer.py
 │   ├── secrets/
 │   │   ├── __init__.py
 │   │   └── vault_client.py
@@ -136,6 +148,7 @@ PostgreSQL
 ├── tests/
 │   ├── test_api.py
 │   ├── test_data_preprocessing.py
+│   ├── test_kafka.py
 │   ├── test_predict.py
 │   └── test_train.py
 ├── vault/
@@ -167,6 +180,11 @@ VAULT_ADDR=http://vault:8200
 VAULT_TOKEN=change_me
 VAULT_KV_MOUNT=secret
 VAULT_DB_SECRET_PATH=database/postgres
+VAULT_KAFKA_SECRET_PATH=kafka/config
+
+KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+KAFKA_PREDICTION_TOPIC=prediction-results
+KAFKA_CONSUMER_GROUP=prediction-results-consumer
 ```
 
 Файл `.env` создаётся локально и не должен попадать в Git.
@@ -184,18 +202,16 @@ VAULT_TOKEN
 
 ## 8. Hashicorp Vault
 
-В лабораторной работе №3 добавлен сервис Hashicorp Vault.
-
 Vault запускается в `docker-compose.yml` как отдельный контейнер:
 
 ```text
-devops_hw_3_vault
+devops_hw_4_vault
 ```
 
 Для инициализации Vault используется отдельный контейнер:
 
 ```text
-devops_hw_3_vault_init
+devops_hw_4_vault_init
 ```
 
 Он выполняет скрипт:
@@ -204,10 +220,11 @@ devops_hw_3_vault_init
 vault/init-vault.sh
 ```
 
-Скрипт записывает параметры подключения к PostgreSQL в Vault по пути:
+Скрипт записывает параметры подключения к PostgreSQL и Kafka в Vault по путям:
 
 ```text
 secret/data/database/postgres
+secret/data/kafka/config
 ```
 
 В Vault записываются следующие параметры:
@@ -218,6 +235,10 @@ POSTGRES_PORT
 POSTGRES_DB
 POSTGRES_USER
 POSTGRES_PASSWORD
+
+KAFKA_BOOTSTRAP_SERVERS
+KAFKA_PREDICTION_TOPIC
+KAFKA_CONSUMER_GROUP
 ```
 
 После успешной записи секретов init-контейнер завершает работу со статусом `Exited (0)`.
@@ -230,7 +251,7 @@ POSTGRES_PASSWORD
 src/secrets/vault_client.py
 ```
 
-Он использует библиотеку `hvac` и читает секреты из Vault.
+Он использует библиотеку `hvac` и читает секреты из Vault. Функция `get_database_secrets()` возвращает параметры подключения к PostgreSQL, а функция `get_kafka_secrets()` — параметры подключения к Apache Kafka.
 
 Файл:
 
@@ -238,17 +259,39 @@ src/secrets/vault_client.py
 src/db/database.py
 ```
 
-был обновлён. Теперь он не читает параметры PostgreSQL напрямую из `.env`, а получает их через функцию:
+получает параметры подключения к PostgreSQL через функцию `get_database_secrets()`, формирует SQLAlchemy connection URL, создаёт engine и открывает сессию для работы с PostgreSQL.
+
+Таким образом, исходный код не содержит логин, пароль, адрес, порт базы данных, адреса брокера Kafka или токены доступа.
+
+## 10. Kafka Producer
+
+Kafka Producer реализован в файле:
 
 ```text
-get_database_secrets()
+src/kafka/producer.py
 ```
 
-После получения секретов формируется SQLAlchemy connection URL, создаётся engine и открывается сессия для работы с PostgreSQL.
+Producer создаётся один раз (ленивая инициализация), параметры подключения (`bootstrap_servers`, топик) читаются из Vault, значения сериализуются в JSON. Функция `send_prediction_message()` публикует результат прогноза в топик `prediction-results`.
 
-Таким образом, исходный код не содержит логин, пароль, адрес, порт базы данных или токены доступа.
+В файле `src/app.py` endpoint `/predict` после выполнения прогноза вызывает публикацию результата в Kafka. Публикация обёрнута в обработку ошибок: при недоступности брокера API всё равно возвращает результат прогноза клиенту.
 
-## 10. Запуск проекта через Docker Compose
+## 11. Kafka Consumer
+
+Kafka Consumer реализован в файле:
+
+```text
+src/kafka/consumer.py
+```
+
+Consumer запускается как отдельный сервис в `docker-compose.yml` командой:
+
+```text
+python -m src.kafka.consumer
+```
+
+Он подключается к брокеру с повторными попытками, подписывается на топик `prediction-results` и в бесконечном цикле читает сообщения. Для каждого сообщения результат прогноза сохраняется в таблицу `prediction_history` через репозитории (`require_champion_model`, `save_prediction_history`).
+
+## 12. Запуск проекта через Docker Compose
 
 Запуск контейнеров:
 
@@ -265,13 +308,15 @@ docker compose ps
 Ожидаемые сервисы:
 
 ```text
-devops_hw_3_api
-devops_hw_3_db
-devops_hw_3_vault
-devops_hw_3_vault_init
+devops_hw_4_api
+devops_hw_4_kafka_consumer
+devops_hw_4_kafka
+devops_hw_4_db
+devops_hw_4_vault
+devops_hw_4_vault_init
 ```
 
-Контейнер `devops_hw_3_vault_init` после выполнения может быть завершён со статусом `Exited (0)`. Это нормальное поведение, так как он нужен только для записи секретов в Vault.
+Контейнер `devops_hw_4_vault_init` после выполнения может быть завершён со статусом `Exited (0)`. Это нормальное поведение, так как он нужен только для записи секретов в Vault.
 
 Остановка контейнеров:
 
@@ -279,13 +324,13 @@ devops_hw_3_vault_init
 docker compose down
 ```
 
-Остановка контейнеров с удалением volume PostgreSQL:
+Остановка контейнеров с удалением volumes:
 
 ```powershell
 docker compose down -v
 ```
 
-## 11. Проверка Vault init
+## 13. Проверка Vault init
 
 Посмотреть логи init-контейнера:
 
@@ -300,11 +345,13 @@ Waiting for Vault...
 Vault is available
 Writing PostgreSQL secrets to Vault...
 PostgreSQL secrets were written to Vault
+Writing Kafka settings to Vault...
+Kafka settings were written to Vault
 ```
 
-Эти логи подтверждают, что параметры PostgreSQL были записаны в Hashicorp Vault.
+Эти логи подтверждают, что параметры PostgreSQL и Kafka были записаны в Hashicorp Vault.
 
-## 12. API endpoints
+## 14. API endpoints
 
 ### GET `/health`
 
@@ -329,7 +376,7 @@ Invoke-RestMethod http://localhost:8000/health
 
 Проверяет подключение API к PostgreSQL.
 
-В ЛР3 этот endpoint подтверждает, что сервис смог получить параметры подключения к БД из Vault и подключиться к PostgreSQL.
+Этот endpoint подтверждает, что сервис смог получить параметры подключения к БД из Vault и подключиться к PostgreSQL.
 
 Пример запроса:
 
@@ -348,13 +395,13 @@ Invoke-RestMethod http://localhost:8000/db/health
 
 ### POST `/predict`
 
-Выполняет прогноз риска диабета и сохраняет результат в PostgreSQL.
+Выполняет прогноз риска диабета и публикует результат в Apache Kafka.
 
 Пример входных данных:
 
 ```json
 {
-  "patient_code": "LAB3-PAT-001",
+  "patient_code": "LAB4-PAT-001",
   "pregnancies": 6,
   "glucose": 148,
   "blood_pressure": 72,
@@ -376,14 +423,20 @@ Invoke-RestMethod http://localhost:8000/db/health
 }
 ```
 
-После выполнения запроса результат сохраняется в таблицу `prediction_history`.
+После выполнения запроса результат публикуется в топик Kafka `prediction-results`, а сервис-потребитель `kafka-consumer` сохраняет его в таблицу `prediction_history`.
 
-## 13. Проверка записи прогноза в PostgreSQL
+## 15. Проверка записи прогноза в PostgreSQL
+
+Перед проверкой можно посмотреть логи сервиса-потребителя:
+
+```powershell
+docker compose logs kafka-consumer
+```
 
 Подключение к PostgreSQL:
 
 ```powershell
-docker exec -it devops_hw_3_db psql -U diabetes_owner -d diabetes
+docker exec -it devops_hw_4_db psql -U diabetes_owner -d diabetes
 ```
 
 SQL-запрос:
@@ -407,10 +460,10 @@ LIMIT 5;
 
 ```text
 id | patient_code_snapshot | prediction | probability | label    | request_source | response_time_ms
-1  | LAB3-PAT-001          | 1          | 0.81466     | detected | api            | 21
+1  | LAB4-PAT-001          | 1          | 0.81466     | detected | api            | 21
 ```
 
-## 14. Загрузка датасета в PostgreSQL
+## 16. Загрузка датасета в PostgreSQL
 
 Для загрузки подготовленного датасета используется скрипт:
 
@@ -441,7 +494,7 @@ valid | 116
 test  | 116
 ```
 
-## 15. Локальные тесты
+## 17. Локальные тесты
 
 Запуск тестов:
 
@@ -452,7 +505,7 @@ pytest
 Ожидаемый результат:
 
 ```text
-20 passed
+24 passed
 ```
 
 Проверяется:
@@ -460,11 +513,14 @@ pytest
 ```text
 tests/test_api.py
 tests/test_data_preprocessing.py
+tests/test_kafka.py
 tests/test_predict.py
 tests/test_train.py
 ```
 
-## 16. CI pipeline
+Модуль `tests/test_kafka.py` содержит юнит-тесты Kafka Producer и Consumer (публикация сообщения в топик, инициализация продьюсера из Vault, сохранение сообщения в БД и повторные попытки подключения Consumer к брокеру).
+
+## 18. CI pipeline
 
 CI pipeline описан в файле:
 
@@ -484,7 +540,7 @@ CI выполняет:
 Docker image:
 
 ```text
-qekqq/devops_hw_3_api
+qekqq/devops_hw_4_api
 ```
 
 Теги:
@@ -494,7 +550,7 @@ latest
 commit_sha
 ```
 
-## 17. CD pipeline
+## 19. CD pipeline
 
 CD pipeline описан в файле:
 
@@ -508,36 +564,37 @@ CD pipeline выполняет:
 2. Авторизацию в DockerHub.
 3. Проверку обязательных GitHub Secrets.
 4. Pull Docker image из DockerHub.
-5. Создание `.env` файла на runner.
-6. Создание временного `docker-compose.cd.yml`.
-7. Запуск API, PostgreSQL, Vault и vault-init.
+5. Создание `.env` файла на runner (включая параметры Kafka).
+6. Создание временного `docker-compose.cd.yml` (с сервисами Kafka и Kafka Consumer).
+7. Запуск API, Kafka Consumer, Apache Kafka, PostgreSQL, Vault и vault-init.
 8. Вывод логов `vault-init`.
 9. Проверку `/health`.
 10. Проверку `/db/health`.
-11. Функциональный тест `/predict`.
-12. Загрузку processed-датасета в PostgreSQL.
+11. Функциональный тест `/predict` (публикация результата в Kafka).
+12. Ожидание асинхронного сохранения прогноза сервисом-потребителем.
 13. Проверку записей в `prediction_history`.
-14. Проверку записей в `dataset_samples`.
-15. Вывод логов API и Vault.
-16. Остановку контейнеров.
+14. Загрузку processed-датасета в PostgreSQL.
+15. Проверку записей в `dataset_samples`.
+16. Вывод логов Kafka Consumer, API и Vault.
+17. Остановку контейнеров.
 
-CD pipeline подтверждает, что сервис работает в контейнерной инфраструктуре и получает параметры подключения к PostgreSQL из Hashicorp Vault.
+CD pipeline подтверждает, что сервис работает в контейнерной инфраструктуре, публикует результаты прогноза в Apache Kafka, а сервис-потребитель сохраняет их в PostgreSQL, используя секреты из Hashicorp Vault.
 
-## 18. DockerHub
+## 20. DockerHub
 
 Docker image публикуется в DockerHub:
 
 ```text
-qekqq/devops_hw_3_api
+qekqq/devops_hw_4_api
 ```
 
 Команда pull:
 
 ```powershell
-docker pull qekqq/devops_hw_3_api:latest
+docker pull qekqq/devops_hw_4_api:latest
 ```
 
-## 19. Безопасность
+## 21. Безопасность
 
 В исходном коде отсутствуют явно прописанные:
 
@@ -546,31 +603,31 @@ docker pull qekqq/devops_hw_3_api:latest
 пароль БД
 адрес БД
 порт БД
+адреса брокера Kafka
 токены доступа
 ```
 
-Секреты передаются через переменные окружения и записываются в Hashicorp Vault. API-сервис получает параметры подключения к PostgreSQL из Vault при создании подключения к базе данных.
+Секреты передаются через переменные окружения и записываются в Hashicorp Vault. API-сервис и сервис-потребитель получают параметры подключения к PostgreSQL и Apache Kafka из Vault.
 
 Файл `.env` используется только локально и не добавляется в Git. В GitHub Actions секреты хранятся в Repository Secrets.
 
-## 20. Результаты работы
+## 22. Результаты работы
 
-В результате лабораторной работы №3 было реализовано:
+В результате лабораторной работы №4 было реализовано:
 
-* подключение Hashicorp Vault к проекту;
-* размещение параметров PostgreSQL в Vault;
-* init-контейнер для записи секретов в Vault;
-* Python-клиент для чтения секретов из Vault;
-* получение параметров подключения к БД из Vault;
-* сохранение защищённого обращения API к PostgreSQL;
-* запуск API, PostgreSQL и Vault через Docker Compose;
-* CI/CD pipeline для сборки, публикации Docker image и функционального тестирования;
-* публикация Docker image в отдельный DockerHub-репозиторий ЛР3.
+* интеграция Apache Kafka в проект (режим KRaft, без ZooKeeper);
+* публикация результата прогноза в Kafka (Kafka Producer);
+* отдельный сервис-потребитель для сохранения результата в PostgreSQL (Kafka Consumer);
+* хранение секретов Kafka и PostgreSQL в Hashicorp Vault;
+* запуск API, Kafka Consumer, Apache Kafka, PostgreSQL и Vault через Docker Compose;
+* переиспользование и доработка CI/CD pipeline под Kafka;
+* юнит-тесты Kafka Producer и Consumer;
+* публикация Docker image в отдельный DockerHub-репозиторий ЛР4.
 
-## 21. Вывод
+## 23. Вывод
 
-В ходе лабораторной работы №3 ML-сервис Diabetes Prediction API был расширен интеграцией с Hashicorp Vault. Теперь параметры подключения к PostgreSQL не хранятся в исходном коде и не передаются напрямую в приложение как основная конфигурация подключения. Вместо этого они записываются в Vault и считываются API-сервисом при обращении к базе данных.
+В ходе лабораторной работы №4 ML-сервис Diabetes Prediction API был расширен интеграцией с брокером сообщений Apache Kafka. После выполнения прогноза API публикует результат в топик Kafka, а отдельный сервис-потребитель асинхронно сохраняет его в PostgreSQL. Секреты Kafka и базы данных хранятся в Hashicorp Vault, поэтому исходный код не содержит данных авторизации.
 
-Система запускается через Docker Compose и включает FastAPI API, PostgreSQL, Hashicorp Vault и init-контейнер для записи секретов. CI/CD pipeline подтверждает корректность проекта: тесты проходят успешно, Docker image публикуется в DockerHub, а CD pipeline запускает контейнеры и проверяет `/health`, `/db/health`, `/predict`, запись прогнозов в БД и загрузку датасета.
+Система запускается через Docker Compose и включает FastAPI API, Kafka Consumer, Apache Kafka, PostgreSQL, Hashicorp Vault и init-контейнер для записи секретов. CI/CD pipeline подтверждает корректность проекта: тесты проходят успешно, Docker image публикуется в DockerHub, а CD pipeline запускает контейнеры с Kafka и проверяет `/health`, `/db/health`, `/predict`, асинхронную запись прогнозов в БД и загрузку датасета.
 
 
