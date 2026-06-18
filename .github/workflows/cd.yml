@@ -10,12 +10,12 @@ on:
   workflow_dispatch:
 
 env:
-  IMAGE_NAME: qekqq/devops_hw_3_api
+  IMAGE_NAME: qekqq/devops_hw_4_api
   IMAGE_TAG: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || 'latest' }}
 
 jobs:
   compose-functional-tests:
-    name: Run docker-compose functional tests with Vault
+    name: Run docker-compose functional tests with Vault and Kafka
     runs-on: ubuntu-latest
 
     if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push') }}
@@ -79,6 +79,11 @@ jobs:
           VAULT_TOKEN=$VAULT_TOKEN
           VAULT_KV_MOUNT=secret
           VAULT_DB_SECRET_PATH=database/postgres
+          VAULT_KAFKA_SECRET_PATH=kafka/config
+
+          KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+          KAFKA_PREDICTION_TOPIC=prediction-results
+          KAFKA_CONSUMER_GROUP=prediction-results-consumer
           EOF
 
       - name: Create CD docker-compose file
@@ -87,7 +92,7 @@ jobs:
           services:
             diabetes-api:
               image: ${IMAGE_NAME}:${IMAGE_TAG}
-              container_name: devops_hw_3_api
+              container_name: devops_hw_4_api
               env_file:
                 - .env
               environment:
@@ -95,6 +100,7 @@ jobs:
                 VAULT_ADDR: http://vault:8200
                 VAULT_KV_MOUNT: secret
                 VAULT_DB_SECRET_PATH: database/postgres
+                VAULT_KAFKA_SECRET_PATH: kafka/config
               ports:
                 - "8000:8000"
               depends_on:
@@ -104,10 +110,34 @@ jobs:
                   condition: service_healthy
                 vault-init:
                   condition: service_completed_successfully
+                kafka:
+                  condition: service_healthy
+
+            kafka-consumer:
+              image: ${IMAGE_NAME}:${IMAGE_TAG}
+              container_name: devops_hw_4_kafka_consumer
+              command: python -m src.kafka.consumer
+              env_file:
+                - .env
+              environment:
+                PYTHONUNBUFFERED: "1"
+                VAULT_ADDR: http://vault:8200
+                VAULT_KV_MOUNT: secret
+                VAULT_DB_SECRET_PATH: database/postgres
+                VAULT_KAFKA_SECRET_PATH: kafka/config
+              depends_on:
+                db:
+                  condition: service_healthy
+                vault:
+                  condition: service_healthy
+                vault-init:
+                  condition: service_completed_successfully
+                kafka:
+                  condition: service_healthy
 
             db:
               image: postgres:16
-              container_name: devops_hw_3_db
+              container_name: devops_hw_4_db
               env_file:
                 - .env
               ports:
@@ -122,7 +152,7 @@ jobs:
 
             vault:
               image: hashicorp/vault:1.17
-              container_name: devops_hw_3_vault
+              container_name: devops_hw_4_vault
               cap_add:
                 - IPC_LOCK
               env_file:
@@ -141,13 +171,14 @@ jobs:
 
             vault-init:
               image: hashicorp/vault:1.17
-              container_name: devops_hw_3_vault_init
+              container_name: devops_hw_4_vault_init
               env_file:
                 - .env
               environment:
                 VAULT_ADDR: http://vault:8200
                 VAULT_KV_MOUNT: secret
                 VAULT_DB_SECRET_PATH: database/postgres
+                VAULT_KAFKA_SECRET_PATH: kafka/config
               volumes:
                 - ./vault/init-vault.sh:/vault/init-vault.sh:ro
               entrypoint: ["/bin/sh", "/vault/init-vault.sh"]
@@ -155,6 +186,26 @@ jobs:
                 vault:
                   condition: service_healthy
               restart: "no"
+
+            kafka:
+              image: bitnamilegacy/kafka:3.7
+              container_name: devops_hw_4_kafka
+              environment:
+                KAFKA_CFG_NODE_ID: 1
+                KAFKA_CFG_PROCESS_ROLES: broker,controller
+                KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+                KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+                KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+                KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+                KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+                KAFKA_CFG_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+                KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+                ALLOW_PLAINTEXT_LISTENER: "yes"
+              healthcheck:
+                test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+                interval: 10s
+                timeout: 10s
+                retries: 20
           EOF
 
       - name: Start services with docker-compose
@@ -177,10 +228,10 @@ jobs:
             sleep 2
           done
 
-          docker logs devops_hw_3_api
+          docker logs devops_hw_4_api
           exit 1
 
-      - name: Run API, Vault and database functional tests
+      - name: Run API, Vault and Kafka functional tests
         run: |
           python - <<'PY'
           import json
@@ -200,7 +251,7 @@ jobs:
           assert db_health_data["database"] == "connected"
 
           payload = {
-              "patient_code": "CI-LAB3-PAT-001",
+              "patient_code": "CI-LAB4-PAT-001",
               "pregnancies": 6,
               "glucose": 148,
               "blood_pressure": 72,
@@ -229,9 +280,32 @@ jobs:
           if predict_data["probability"] is not None:
               assert 0 <= predict_data["probability"] <= 1
 
-          print("Functional API tests with Vault passed")
+          print("Functional API tests passed")
           print(predict_data)
           PY
+
+      - name: Wait for consumer to save prediction into database
+        env:
+          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
+          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+        run: |
+          PREDICTION_ROWS=0
+
+          for i in {1..30}; do
+            PREDICTION_ROWS=$(docker compose -f docker-compose.cd.yml exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT COUNT(*) FROM prediction_history;" | tr -d '[:space:]')
+            echo "prediction_history rows: $PREDICTION_ROWS (attempt $i)"
+
+            if [ "$PREDICTION_ROWS" -gt 0 ]; then
+              echo "Consumer saved prediction into database"
+              exit 0
+            fi
+
+            sleep 2
+          done
+
+          echo "Consumer did not save prediction into database"
+          docker compose -f docker-compose.cd.yml logs kafka-consumer
+          exit 1
 
       - name: Load processed dataset into PostgreSQL
         run: |
@@ -255,6 +329,11 @@ jobs:
             psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
             -c "SELECT split, COUNT(*) AS rows_count FROM dataset_samples GROUP BY split ORDER BY split;"
 
+      - name: Show consumer logs
+        if: always()
+        run: |
+          docker compose -f docker-compose.cd.yml logs kafka-consumer || true
+
       - name: Show service status
         if: always()
         run: |
@@ -263,12 +342,12 @@ jobs:
       - name: Show API logs
         if: always()
         run: |
-          docker logs devops_hw_3_api || true
+          docker logs devops_hw_4_api || true
 
       - name: Show Vault logs
         if: always()
         run: |
-          docker logs devops_hw_3_vault || true
+          docker logs devops_hw_4_vault || true
 
       - name: Stop services
         if: always()

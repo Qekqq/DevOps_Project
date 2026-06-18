@@ -1,11 +1,12 @@
 import time
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from src.db.database import get_session_factory
-from src.db.repositories import require_champion_model, save_prediction_history
+from src.kafka.producer import send_prediction_message
 from src.logger import get_logger
 from src.predict import DiabetesPredictor
 from src.schemas import DiabetesInput, HealthResponse, PredictionResponse
@@ -22,9 +23,9 @@ app = FastAPI(
 predictor = DiabetesPredictor()
 
 
-def build_db_features(input_data: DiabetesInput) -> dict[str, float | int]:
+def build_features(input_data: DiabetesInput) -> dict[str, float | int]:
     """
-    Преобразует входные данные API в словарь признаков для сохранения в БД.
+    Преобразует входные данные API в словарь признаков.
     """
     return {
         "pregnancies": input_data.pregnancies,
@@ -38,38 +39,41 @@ def build_db_features(input_data: DiabetesInput) -> dict[str, float | int]:
     }
 
 
-def save_prediction_to_database(
+def build_prediction_message(
+    input_data: DiabetesInput,
+    result: dict,
+    response_time_ms: int,
+) -> dict:
+    """
+    Формирует сообщение с результатом работы модели для отправки в Kafka.
+    """
+    return {
+        "patient_code": input_data.patient_code,
+        "features": build_features(input_data),
+        "prediction": result["prediction"],
+        "probability": result.get("probability"),
+        "label": result["label"],
+        "request_source": "api",
+        "response_time_ms": response_time_ms,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def publish_prediction(
     input_data: DiabetesInput,
     result: dict,
     response_time_ms: int,
 ) -> None:
     """
-    Сохраняет результат прогноза в PostgreSQL.
+    Публикует результат прогноза в Kafka (роль Producer).
 
-    Если БД недоступна, API всё равно возвращает результат прогноза.
-    Это позволяет unit-тестам API работать без запущенного PostgreSQL.
+    Если Kafka недоступна, API всё равно возвращает результат прогноза.
     """
     try:
-        session_factory = get_session_factory()
-
-        with session_factory() as db:
-            model_version = require_champion_model(db)
-
-            save_prediction_history(
-                db=db,
-                features=build_db_features(input_data),
-                prediction=result["prediction"],
-                probability=result.get("probability"),
-                model_version=model_version,
-                patient_code=input_data.patient_code,
-                request_source="api",
-                response_time_ms=response_time_ms,
-            )
-
-            db.commit()
-
-    except (RuntimeError, SQLAlchemyError) as error:
-        logger.error("Не удалось сохранить прогноз в БД: %s", error)
+        message = build_prediction_message(input_data, result, response_time_ms)
+        send_prediction_message(message, key=input_data.patient_code)
+    except Exception as error:  # noqa: BLE001
+        logger.error("Не удалось опубликовать прогноз в Kafka: %s", error)
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -77,10 +81,7 @@ def health_check() -> HealthResponse:
     """
     Проверяет состояние API.
     """
-    return HealthResponse(
-        status="ok",
-        service="diabetes-prediction-api",
-    )
+    return HealthResponse(status="ok", service="diabetes-prediction-api")
 
 
 @app.get("/db/health")
@@ -94,10 +95,7 @@ def database_health_check() -> dict[str, str]:
         with session_factory() as db:
             db.execute(text("SELECT 1"))
 
-        return {
-            "status": "ok",
-            "database": "connected",
-        }
+        return {"status": "ok", "database": "connected"}
 
     except (RuntimeError, SQLAlchemyError) as error:
         logger.error("Проверка подключения к БД завершилась ошибкой: %s", error)
@@ -107,7 +105,7 @@ def database_health_check() -> dict[str, str]:
 @app.post("/predict", response_model=PredictionResponse)
 def predict_diabetes(input_data: DiabetesInput) -> PredictionResponse:
     """
-    Выполняет прогноз риска диабета и сохраняет результат в БД.
+    Выполняет прогноз риска диабета и публикует результат в Kafka.
     """
     start_time = time.perf_counter()
 
@@ -117,7 +115,7 @@ def predict_diabetes(input_data: DiabetesInput) -> PredictionResponse:
 
         response_time_ms = int((time.perf_counter() - start_time) * 1000)
 
-        save_prediction_to_database(
+        publish_prediction(
             input_data=input_data,
             result=result,
             response_time_ms=response_time_ms,

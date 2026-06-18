@@ -1,54 +1,26 @@
 import pytest
 from fastapi.testclient import TestClient
-
+ 
 import src.app as app_module
-from src.db.database import get_db
-
-
-class DummyDb:
-    def commit(self) -> None:
-        pass
-
-    def rollback(self) -> None:
-        pass
-
-
-class DummyModelVersion:
-    id = 1
-    model_version = "test-model-version"
-
-
-def override_get_db():
-    yield DummyDb()
-
-
+ 
+ 
 @pytest.fixture(autouse=True)
-def mock_database_layer(monkeypatch):
+def mock_kafka_layer(monkeypatch):
     """
-    Mocks database dependency for API unit tests.
-
-    The real database integration is checked separately through docker-compose
-    and /db/health. These tests should validate API behavior only.
+    Mocks the Kafka producer for API unit tests.
+ 
+    Real Kafka publishing is verified separately through docker-compose and the
+    CD functional tests. These unit tests validate API behavior only.
     """
     monkeypatch.setattr(
         app_module,
-        "require_champion_model",
-        lambda db: DummyModelVersion(),
-    )
-
-    monkeypatch.setattr(
-        app_module,
-        "save_prediction_history",
+        "send_prediction_message",
         lambda *args, **kwargs: None,
     )
-
-    app_module.app.dependency_overrides[get_db] = override_get_db
-
+ 
     yield
-
-    app_module.app.dependency_overrides.clear()
-
-
+ 
+ 
 client = TestClient(app_module.app)
 
 
