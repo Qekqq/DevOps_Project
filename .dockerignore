@@ -1,6 +1,10 @@
 .venv/
 venv/
 env/
+.env
+.env.*
+**/.env
+**/.env.*
 
 .git/
 .github/
