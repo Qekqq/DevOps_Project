@@ -96,3 +96,17 @@ def test_unknown_endpoint_returns_404():
     response = client.get("/unknown")
 
     assert response.status_code == 404
+
+
+def test_predict_rejects_zero_diabetes_pedigree_function():
+    invalid_input = VALID_INPUT.copy()
+    invalid_input["diabetes_pedigree_function"] = 0
+
+    response = client.post("/predict", json=invalid_input)
+
+    assert response.status_code == 422
+    assert any(
+        error["loc"] == ["body", "diabetes_pedigree_function"]
+        and error["type"] == "greater_than"
+        for error in response.json()["detail"]
+    )

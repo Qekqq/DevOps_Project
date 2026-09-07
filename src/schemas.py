@@ -19,7 +19,7 @@ class DiabetesInput(BaseModel):
     bmi: float = Field(..., ge=0, description="Индекс массы тела.")
     diabetes_pedigree_function: float = Field(
         ...,
-        ge=0,
+        gt=0,
         description="Наследственный фактор диабета.",
     )
     age: int = Field(..., ge=0, description="Возраст.")
