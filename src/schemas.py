@@ -11,18 +11,19 @@ class DiabetesInput(BaseModel):
         max_length=100,
         description="Необязательный код пациента.",
     )
-    pregnancies: int = Field(..., ge=0, description="Количество беременностей.")
-    glucose: float = Field(..., ge=0, description="Уровень глюкозы.")
-    blood_pressure: float = Field(..., ge=0, description="Артериальное давление.")
-    skin_thickness: float = Field(..., ge=0, description="Толщина кожной складки.")
-    insulin: float = Field(..., ge=0, description="Уровень инсулина.")
-    bmi: float = Field(..., ge=0, description="Индекс массы тела.")
+    pregnancies: int = Field(..., ge=0, le=20, description="Количество беременностей.")
+    glucose: float = Field(..., ge=0, le=600, description="Уровень глюкозы.")
+    blood_pressure: float = Field(..., ge=0, le=200, description="Артериальное давление.")
+    skin_thickness: float = Field(..., ge=0, le=110, description="Толщина кожной складки.")
+    insulin: float = Field(..., ge=0, le=1000, description="Уровень инсулина.")
+    bmi: float = Field(..., ge=0, le=100, description="Индекс массы тела.")
     diabetes_pedigree_function: float = Field(
         ...,
         gt=0,
+        le=3,
         description="Наследственный фактор диабета.",
     )
-    age: int = Field(..., ge=0, description="Возраст.")
+    age: int = Field(..., gt=0, le=120, description="Возраст.")
 
     @field_validator("patient_code")
     @classmethod

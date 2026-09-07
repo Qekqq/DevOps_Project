@@ -110,3 +110,62 @@ def test_predict_rejects_zero_diabetes_pedigree_function():
         and error["type"] == "greater_than"
         for error in response.json()["detail"]
     )
+
+
+INPUT_RANGES = [
+    ("pregnancies", 0, 20),
+    ("glucose", 0, 600),
+    ("blood_pressure", 0, 200),
+    ("skin_thickness", 0, 110),
+    ("insulin", 0, 1000),
+    ("bmi", 0, 100),
+    ("diabetes_pedigree_function", 0.001, 3),
+    ("age", 1, 120),
+]
+
+
+@pytest.mark.parametrize("field,lower,upper", INPUT_RANGES)
+@pytest.mark.parametrize("boundary", ["lower", "upper"])
+def test_predict_accepts_range_boundaries(field, lower, upper, boundary):
+    payload = VALID_INPUT.copy()
+    payload[field] = lower if boundary == "lower" else upper
+
+    response = client.post("/predict", json=payload)
+
+    assert response.status_code == 200, response.text
+
+
+@pytest.mark.parametrize("field,lower,upper", INPUT_RANGES)
+@pytest.mark.parametrize("case", ["negative", "above_max", "null", "missing"])
+def test_predict_rejects_invalid_feature_values(field, lower, upper, case):
+    payload = VALID_INPUT.copy()
+    if case == "missing":
+        payload.pop(field)
+    else:
+        payload[field] = {
+            "negative": -1,
+            "above_max": upper + 1,
+            "null": None,
+        }[case]
+
+    response = client.post("/predict", json=payload)
+
+    assert response.status_code == 422
+    assert any(
+        error["loc"] == ["body", field]
+        for error in response.json()["detail"]
+    )
+
+
+def test_predict_rejects_zero_age():
+    payload = VALID_INPUT.copy()
+    payload["age"] = 0
+
+    response = client.post("/predict", json=payload)
+
+    assert response.status_code == 422
+    assert any(
+        error["loc"] == ["body", "age"]
+        and error["type"] == "greater_than"
+        for error in response.json()["detail"]
+    )
