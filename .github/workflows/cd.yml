@@ -251,7 +251,8 @@ jobs:
           assert db_health_data["database"] == "connected"
 
           payload = {
-              "patient_code": "CI-LAB4-PAT-001",
+              "patient_code": "TST001",
+              "study_date": "2026-09-08",
               "pregnancies": 6,
               "glucose": 148,
               "blood_pressure": 72,

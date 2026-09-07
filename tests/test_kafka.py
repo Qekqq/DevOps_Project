@@ -1,4 +1,5 @@
 import pytest
+from datetime import date
 from kafka.errors import NoBrokersAvailable
 
 import src.kafka.consumer as consumer_module
@@ -13,6 +14,8 @@ KAFKA_SETTINGS = {
 
 
 VALID_MESSAGE = {
+    "study_date": "2026-09-08",
+    "model_version": "lab2-1.0.0",
     "patient_code": "TEST-001",
     "features": {"glucose": 148, "bmi": 33.6},
     "prediction": 1,
@@ -90,7 +93,11 @@ def test_save_message_to_database_persists_prediction(monkeypatch):
     captured = {}
 
     monkeypatch.setattr(consumer_module, "get_session_factory", lambda: (lambda: fake_db))
-    monkeypatch.setattr(consumer_module, "require_champion_model", lambda db: "champion-model")
+    def lookup_model(db, version):
+        assert version == "lab2-1.0.0"
+        return "message-model"
+
+    monkeypatch.setattr(consumer_module, "require_model_version", lookup_model)
     monkeypatch.setattr(
         consumer_module,
         "save_prediction_history",
@@ -101,7 +108,8 @@ def test_save_message_to_database_persists_prediction(monkeypatch):
 
     assert captured["prediction"] == 1
     assert captured["features"] == {"glucose": 148, "bmi": 33.6}
-    assert captured["model_version"] == "champion-model"
+    assert captured["model_version"] == "message-model"
+    assert captured["study_date"] == date(2026, 9, 8)
     assert captured["patient_code"] == "TEST-001"
     assert fake_db.committed is True
 

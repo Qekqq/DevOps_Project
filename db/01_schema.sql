@@ -242,6 +242,8 @@ CREATE TABLE IF NOT EXISTS model_versions (
     model_name VARCHAR(100) NOT NULL,
     model_version VARCHAR(50) NOT NULL UNIQUE,
     artifact_path VARCHAR(255) NOT NULL,
+    artifact_sha256 VARCHAR(64) NOT NULL,
+    train_medians JSONB NOT NULL,
     preprocessing_version VARCHAR(50),
     trained_on_dataset_id BIGINT REFERENCES datasets(id) ON DELETE SET NULL,
 
@@ -302,15 +304,27 @@ COMMENT ON COLUMN model_versions.created_at IS 'Дата и время реги�
 -- пациента или версии модели.
 -- ============================================================
  
+CREATE TABLE IF NOT EXISTS studies (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    patient_code VARCHAR(6) NOT NULL CHECK (patient_code ~ '^[A-Z]{3}[0-9]{3}$'),
+    study_date DATE NOT NULL,
+    features JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_studies_patient_date UNIQUE (patient_code, study_date)
+);
+
 CREATE TABLE IF NOT EXISTS prediction_history (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    study_id BIGINT NOT NULL REFERENCES studies(id) ON DELETE RESTRICT,
  
     user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
     patient_id BIGINT REFERENCES patients(id) ON DELETE SET NULL,
     model_version_id BIGINT REFERENCES model_versions(id) ON DELETE SET NULL,
  
     patient_code_snapshot VARCHAR(100),
-    model_version_snapshot VARCHAR(50),
+    model_version_snapshot VARCHAR(50) NOT NULL,
+    study_date DATE NOT NULL,
+    inference_payload JSONB,
  
     pregnancies INTEGER NOT NULL,
     glucose NUMERIC(6, 3) NOT NULL,
@@ -365,6 +379,10 @@ CREATE TABLE IF NOT EXISTS prediction_history (
  
 CREATE INDEX IF NOT EXISTS idx_pred_hist_user
     ON prediction_history(user_id);
+
+-- Один прогноз версии модели для исследования пациента на указанную дату.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_prediction_history_study_model
+    ON prediction_history (study_id, model_version_snapshot);
  
 CREATE INDEX IF NOT EXISTS idx_pred_hist_patient
     ON prediction_history(patient_id);
@@ -401,15 +419,15 @@ COMMENT ON COLUMN prediction_history.created_at IS 'Дата и время вы�
 
 -- ============================================================
 -- prediction_feedback
--- Обратная связь по предсказанию (истинная метка).
--- Связь 1:1 с prediction_history. При поступлении более надёжного
+-- Обратная связь по исследованию (общая истинная метка для всех моделей).
+-- Связь 1:1 со studies. При поступлении более надёжного
 -- источника запись перезаписывается (UPDATE).
 -- ============================================================
  
 CREATE TABLE IF NOT EXISTS prediction_feedback (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    prediction_history_id BIGINT NOT NULL UNIQUE
-        REFERENCES prediction_history(id) ON DELETE CASCADE,
+    study_id BIGINT NOT NULL UNIQUE
+        REFERENCES studies(id) ON DELETE RESTRICT,
     created_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
  
     true_label INTEGER NOT NULL,
@@ -422,7 +440,7 @@ CREATE TABLE IF NOT EXISTS prediction_feedback (
 COMMENT ON TABLE prediction_feedback IS 'Истинные метки по ранее выполненным предсказаниям. Используется для оценки качества модели на реальных данных.';
  
 COMMENT ON COLUMN prediction_feedback.id IS 'Внутренний уникальный идентификатор обратной связи.';
-COMMENT ON COLUMN prediction_feedback.prediction_history_id IS 'Предсказание, к которому относится обратная связь. Связь 1:1.';
+COMMENT ON COLUMN prediction_feedback.study_id IS 'Исследование, к которому относится общая фактическая метка для всех моделей.';
 COMMENT ON COLUMN prediction_feedback.created_by_user_id IS 'Пользователь, внёсший истинную метку. Может быть NULL, если автор неизвестен или пользователь удалён. Роль автора берётся из users.role.';
 COMMENT ON COLUMN prediction_feedback.true_label IS 'Реальная метка: 0 — диабет не подтверждён, 1 — диабет подтверждён.';
 COMMENT ON COLUMN prediction_feedback.created_at IS 'Дата и время добавления/обновления обратной связи.';

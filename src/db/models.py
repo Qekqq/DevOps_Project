@@ -2,14 +2,18 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     Column,
+    CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     Identity,
     Integer,
+    Index,
     Numeric,
     String,
     UniqueConstraint,
     text,
+    func,
 )
 from sqlalchemy.dialects.postgresql import ENUM, JSONB
 from sqlalchemy.orm import relationship
@@ -134,6 +138,8 @@ class ModelVersion(Base):
     model_name = Column(String(100), nullable=False)
     model_version = Column(String(50), nullable=False, unique=True)
     artifact_path = Column(String(255), nullable=False)
+    artifact_sha256 = Column(String(64), nullable=False)
+    train_medians = Column(JSONB, nullable=False)
     preprocessing_version = Column(String(50))
 
     trained_on_dataset_id = Column(
@@ -156,8 +162,28 @@ class ModelVersion(Base):
     predictions = relationship("PredictionHistory", back_populates="model_version")
 
 
+class Study(Base):
+    __tablename__ = "studies"
+
+    id = Column(BigInteger, Identity(always=True), primary_key=True)
+    patient_code = Column(String(6), nullable=False)
+    study_date = Column(Date, nullable=False)
+    features = Column(JSONB, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+
+    __table_args__ = (
+        UniqueConstraint("patient_code", "study_date", name="uq_studies_patient_date"),
+        CheckConstraint("patient_code ~ '^[A-Z]{3}[0-9]{3}$'", name="chk_studies_patient_code"),
+    )
+    predictions = relationship("PredictionHistory", back_populates="study")
+    feedback = relationship("PredictionFeedback", back_populates="study", uselist=False)
+
+
 class PredictionHistory(Base):
     __tablename__ = "prediction_history"
+
+    study_id = Column(BigInteger, ForeignKey("studies.id", ondelete="RESTRICT"), nullable=False)
+    study = relationship("Study", back_populates="predictions")
 
     id = Column(BigInteger, Identity(always=True), primary_key=True)
 
@@ -177,7 +203,18 @@ class PredictionHistory(Base):
     )
 
     patient_code_snapshot = Column(String(100))
-    model_version_snapshot = Column(String(50))
+    model_version_snapshot = Column(String(50), nullable=False)
+    study_date = Column(Date, nullable=False)
+    inference_payload = Column(JSONB)
+
+    __table_args__ = (
+        Index(
+            "uq_prediction_history_study_model",
+            study_id,
+            model_version_snapshot,
+            unique=True,
+        ),
+    )
 
     pregnancies = Column(Integer, nullable=False)
     glucose = Column(Numeric(6, 3), nullable=False)
@@ -204,21 +241,18 @@ class PredictionHistory(Base):
     patient = relationship("Patient", back_populates="predictions")
     model_version = relationship("ModelVersion", back_populates="predictions")
 
-    feedback = relationship(
-        "PredictionFeedback",
-        back_populates="prediction_history",
-        uselist=False,
-    )
-
-
 class PredictionFeedback(Base):
     __tablename__ = "prediction_feedback"
 
+    __table_args__ = (
+        CheckConstraint("true_label IN (0, 1)", name="chk_feedback_true_label_value"),
+    )
+
     id = Column(BigInteger, Identity(always=True), primary_key=True)
 
-    prediction_history_id = Column(
+    study_id = Column(
         BigInteger,
-        ForeignKey("prediction_history.id", ondelete="CASCADE"),
+        ForeignKey("studies.id", ondelete="RESTRICT"),
         nullable=False,
         unique=True,
     )
@@ -231,5 +265,5 @@ class PredictionFeedback(Base):
     true_label = Column(Integer, nullable=False)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
-    prediction_history = relationship("PredictionHistory", back_populates="feedback")
+    study = relationship("Study", back_populates="feedback")
     created_by_user = relationship("User", back_populates="feedback_items")

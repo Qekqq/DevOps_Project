@@ -1,3 +1,6 @@
+from datetime import date
+import re
+
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -6,10 +9,18 @@ class DiabetesInput(BaseModel):
     Схема входных данных для предсказания диабета.
     """
 
-    patient_code: str | None = Field(
-        default=None,
-        max_length=100,
-        description="Необязательный код пациента.",
+    patient_code: str = Field(
+        ...,
+        min_length=6,
+        max_length=6,
+        pattern=r"^[A-Z]{3}[0-9]{3}$",
+        description="Код пациента: три латинские буквы и три цифры, например PAT001.",
+        examples=["PAT001"],
+    )
+    study_date: date = Field(
+        ...,
+        description="Дата исследования без времени в формате ГГГГ-ММ-ДД.",
+        examples=["2026-09-08"],
     )
     pregnancies: int = Field(..., ge=0, le=20, description="Количество беременностей.")
     glucose: float = Field(..., ge=0, le=600, description="Уровень глюкозы.")
@@ -25,21 +36,27 @@ class DiabetesInput(BaseModel):
     )
     age: int = Field(..., gt=0, le=120, description="Возраст.")
 
-    @field_validator("patient_code")
+    @field_validator("study_date", mode="before")
     @classmethod
-    def validate_patient_code(cls, value: str | None) -> str | None:
+    def validate_study_date(cls, value: object) -> object:
+        """Принимает календарную дату; время и числовые timestamps запрещены."""
+        if type(value) is date:
+            return value
+        if isinstance(value, str) and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
+            return value
+        raise ValueError("Укажите дату исследования без времени в формате ГГГГ-ММ-ДД")
+
+    @field_validator("patient_code", mode="before")
+    @classmethod
+    def validate_patient_code(cls, value: object) -> object:
         """
-        Убирает лишние пробелы из кода пациента.
-
-        Если код пациента не передан, возвращает None.
+        Убирает пробелы по краям и приводит латинские буквы к верхнему регистру.
+        Тип, длина и формат затем проверяются ограничениями поля.
         """
-        if value is None:
-            return None
-
-        value = value.strip()
-
-        if not value:
-            return None
+        if isinstance(value, str):
+            value = value.strip()
+            if value.isascii():
+                value = value.upper()
 
         return value
 
