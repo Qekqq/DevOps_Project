@@ -152,7 +152,6 @@ def save_prediction_history(
     study_date: date,
     patient_code: str | None = None,
     user_id: int | None = None,
-    request_source: str = "api",
     response_time_ms: int | None = None,
     role_at_prediction: str | None = None,
 ) -> PredictionHistory:
@@ -216,7 +215,6 @@ def save_prediction_history(
         prediction=int(prediction),
         probability=probability,
         role_at_prediction=role_at_prediction or model_version.role,
-        request_source=request_source,
         response_time_ms=response_time_ms,
     )
 

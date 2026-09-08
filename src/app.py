@@ -1,15 +1,18 @@
 import time
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
+from src.auth import current_user
+from src.auth import router as auth_router
 from src.config import load_config
 from src.db.database import get_session_factory
+from src.db.models import User
 from src.db.repositories import (
     ChampionUnavailableError,
     StudyConflictError,
@@ -20,15 +23,28 @@ from src.db.repositories import (
 from src.kafka.producer import send_prediction_message
 from src.logger import get_logger
 from src.model_registry import ModelRegistry
+from src.monitoring import router as monitoring_router
 from src.schemas import DiabetesInput, HealthResponse, PredictionResponse
+from src.studies import router as studies_router
+from src.telemetry import (
+    PREDICTIONS,
+    event,
+    lifespan,
+    measure_inference,
+    observe_request,
+    request_id,
+)
 
 logger = get_logger(__name__)
 
 app = FastAPI(
-    title="Diabetes Prediction API",
+    root_path="/api",
+    title="API прогнозирования диабета",
     description="API для предсказания наличия диабета на основе медицинских признаков.",
     version="1.0.0",
+    lifespan=lifespan,
 )
+app.middleware("http")(observe_request)
 
 app.add_middleware(
     CORSMiddleware,
@@ -43,6 +59,9 @@ app.add_middleware(
 )
 
 model_registry = ModelRegistry()
+app.include_router(auth_router)
+app.include_router(studies_router)
+app.include_router(monitoring_router)
 
 
 @app.exception_handler(RequestValidationError)
@@ -118,9 +137,9 @@ def build_prediction_message(
         "prediction": result["prediction"],
         "probability": result.get("probability"),
         "label": result["label"],
-        "request_source": "api",
         "response_time_ms": response_time_ms,
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "request_id": request_id.get(),
     }
 
 
@@ -148,7 +167,7 @@ def publish_prediction(
         ) from error
 
 
-@app.get("/health", response_model=HealthResponse)
+@app.get("/health", response_model=HealthResponse, summary="Состояние API")
 def health_check() -> HealthResponse:
     """
     Проверяет состояние API.
@@ -156,7 +175,7 @@ def health_check() -> HealthResponse:
     return HealthResponse(status="ok", service="diabetes-prediction-api")
 
 
-@app.get("/db/health")
+@app.get("/db/health", summary="Подключение к базе данных")
 def database_health_check() -> dict[str, str]:
     """
     Проверяет подключение API к PostgreSQL.
@@ -177,8 +196,10 @@ def database_health_check() -> dict[str, str]:
         )
 
 
-@app.post("/predict", response_model=PredictionResponse)
-def predict_diabetes(input_data: DiabetesInput) -> PredictionResponse:
+@app.post("/predict", response_model=PredictionResponse, summary="Получить прогноз")
+def predict_diabetes(
+    input_data: DiabetesInput, user: User = Depends(current_user)
+) -> PredictionResponse:
     """
     Выполняет прогноз риска диабета и публикует результат в Kafka.
     """
@@ -212,7 +233,9 @@ def predict_diabetes(input_data: DiabetesInput) -> PredictionResponse:
         ) from error
 
     if saved_result is not None:
-        return PredictionResponse(**saved_result)
+        PREDICTIONS.labels(cached="true").inc()
+        event("prediction_returned", cached=True, actor_id=user.id)
+        return PredictionResponse(**saved_result, cached=True)
 
     try:
         predictor = model_registry.from_record(champion)
@@ -224,7 +247,8 @@ def predict_diabetes(input_data: DiabetesInput) -> PredictionResponse:
         ) from error
 
     try:
-        result = predictor.predict(model_input)
+        with measure_inference("champion", "predict"):
+            result = predictor.predict(model_input)
 
         # Фиксируем исследование до публикации: второй запрос с другими
         # показателями получает 409 даже пока consumer ещё не записал прогноз.
@@ -235,6 +259,7 @@ def predict_diabetes(input_data: DiabetesInput) -> PredictionResponse:
                     input_data.patient_code,
                     input_data.study_date,
                     model_input,
+                    created_by=user.id,
                 )
                 db.commit()
         except StudyConflictError as error:
@@ -254,6 +279,8 @@ def predict_diabetes(input_data: DiabetesInput) -> PredictionResponse:
             model_version=selected_version,
         )
 
+        PREDICTIONS.labels(cached="false").inc()
+        event("prediction_published", cached=False, actor_id=user.id)
         return PredictionResponse(**result)
 
     except HTTPException:

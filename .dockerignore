@@ -38,3 +38,9 @@ tests/
 
 .DS_Store
 Thumbs.db
+
+# Frontend собирается отдельным Dockerfile
+frontend/
+
+# Конфигурация мониторинга подключается к отдельным сервисам
+monitoring/

@@ -1,4 +1,4 @@
-"""Database entities. SQL schema is generated from this metadata."""
+"""Сущности базы данных. SQL-схема генерируется из этих метаданных."""
 
 from sqlalchemy import (
     BigInteger,
@@ -43,6 +43,17 @@ class User(Base):
     __table_args__ = (CheckConstraint("role IN ('user','admin')"),)
 
 
+class UserSession(Base):
+    __tablename__ = "user_sessions"
+    token_hash = Column(String(64), primary_key=True)
+    user_id = Column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    password_fingerprint = Column(String(64), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    created_at = timestamp()
+
+
 class Study(Base):
     __tablename__ = "studies"
     id = identifier()
@@ -81,6 +92,21 @@ class Study(Base):
     def features(self, values):
         for name in FEATURE_COLUMNS:
             setattr(self, name, values[name])
+
+
+class StudyEdit(Base):
+    __tablename__ = "study_edits"
+    id = identifier()
+    study_id = Column(
+        BigInteger, ForeignKey("studies.id", ondelete="RESTRICT"), nullable=False
+    )
+    changed_by = Column(
+        BigInteger, ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    features_before = Column(JSONB, nullable=False)
+    features_after = Column(JSONB, nullable=False)
+    predictions_before = Column(JSONB, nullable=False)
+    changed_at = timestamp()
 
 
 class Dataset(Base):
@@ -179,7 +205,6 @@ class PredictionHistory(Base):
     prediction = Column(Integer, nullable=False)
     probability = Column(Float, nullable=False)
     role_at_prediction = Column(String(20), nullable=False)
-    request_source = Column(String(20), nullable=False, default="api")
     response_time_ms = Column(Integer)
     created_at = timestamp()
     study = relationship("Study")
@@ -191,7 +216,6 @@ class PredictionHistory(Base):
         CheckConstraint("prediction IN (0,1)"),
         CheckConstraint("probability BETWEEN 0 AND 1"),
         CheckConstraint("role_at_prediction IN ('champion','challenger')"),
-        CheckConstraint("request_source IN ('api','frontend','test')"),
         CheckConstraint("response_time_ms IS NULL OR response_time_ms >= 0"),
     )
 

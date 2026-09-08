@@ -1,31 +1,35 @@
-"""Применяет защиту обратной связи к существующей БД без удаления данных."""
+"""Обновляет схему существующей БД при запуске новой версии приложения."""
 
+import re
 from pathlib import Path
 
+from sqlalchemy import text
+
 from src.db.database import get_engine
+from src.db.models import StudyEdit, UserSession
 
 
 def main():
-    source = Path(__file__).resolve().parents[1] / "db" / "03_audit.sql"
+    source = Path(__file__).resolve().parents[1] / "db" / "02_audit.sql"
     sql = source.read_text(encoding="utf-8")
-    marker = "CREATE FUNCTION protect_feedback_identity()"
-    if sql.count(marker) != 1:
-        raise RuntimeError("Не найдено однозначное определение защиты обратной связи")
-    definition = marker + sql.split(marker, 1)[1]
-    definition = definition.replace(
-        marker, "CREATE OR REPLACE FUNCTION protect_feedback_identity()", 1
-    )
-    definition = definition.replace(
-        "CREATE TRIGGER feedback_identity_guard",
-        "DROP TRIGGER IF EXISTS feedback_identity_guard ON feedback;\n"
-        "CREATE TRIGGER feedback_identity_guard",
-        1,
+    # Обновляем все функции из того же файла, который используется при создании БД.
+    # Повторный запуск не меняет строки и не создаёт дублирующие триггеры.
+    definition = sql.replace("CREATE FUNCTION ", "CREATE OR REPLACE FUNCTION ")
+    definition = re.sub(
+        r"CREATE TRIGGER (\w+) ([^;]*? ON (\w+)\s+)",
+        r"DROP TRIGGER IF EXISTS \1 ON \3;\nCREATE TRIGGER \1 \2",
+        definition,
     )
     with get_engine().begin() as connection:
         connection.exec_driver_sql("SET LOCAL lock_timeout = '10s'")
         connection.exec_driver_sql("SELECT pg_advisory_xact_lock(20260908, 1)")
-        connection.exec_driver_sql(definition)
-    print("Защита обратной связи обновлена; существующие данные сохранены.")
+        UserSession.__table__.create(connection, checkfirst=True)
+        StudyEdit.__table__.create(connection, checkfirst=True)
+        connection.exec_driver_sql(
+            "ALTER TABLE predictions DROP COLUMN IF EXISTS request_source"
+        )
+        connection.execute(text(definition))
+    print("Схема и функции аудита обновлены; существующие данные сохранены.")
 
 
 if __name__ == "__main__":
