@@ -1,9 +1,21 @@
 .venv/
 venv/
 env/
+.env
+*.kdbx
+*.keyx
+.env.*
+**/.env
+**/.env.*
 
 .git/
 .github/
+.dvc/
+.local-history/
+backups/
+.codex/
+.agents/
+data/feedback/
 
 __pycache__/
 *.pyc
@@ -11,6 +23,7 @@ __pycache__/
 *.pyd
 
 .pytest_cache/
+.ruff_cache/
 .coverage
 htmlcov/
 
@@ -21,6 +34,7 @@ logs/
 
 notebooks/
 reports/
+tests/
 
 .DS_Store
 Thumbs.db

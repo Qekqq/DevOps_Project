@@ -1,26 +1,27 @@
+name: devops_project
+
 services:
   diabetes-api:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: devops_hw_4_api
-    env_file:
-      - .env
     environment:
       PYTHONUNBUFFERED: "1"
       VAULT_ADDR: http://vault:8200
+      VAULT_ROLE_ID: ${API_VAULT_ROLE_ID:-}
+      VAULT_SECRET_ID: ${API_VAULT_SECRET_ID:-}
       VAULT_KV_MOUNT: secret
       VAULT_DB_SECRET_PATH: database/postgres
       VAULT_KAFKA_SECRET_PATH: kafka/config
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8001:8000"
+    volumes:
+      - ./data/feedback:/app/data/feedback
     depends_on:
       db:
         condition: service_healthy
       vault:
         condition: service_healthy
-      vault-init:
-        condition: service_completed_successfully
       kafka:
         condition: service_healthy
     restart: unless-stopped
@@ -29,12 +30,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: devops_hw_4_kafka_consumer
-    env_file:
-      - .env
     environment:
       PYTHONUNBUFFERED: "1"
       VAULT_ADDR: http://vault:8200
+      VAULT_ROLE_ID: ${CONSUMER_VAULT_ROLE_ID:-}
+      VAULT_SECRET_ID: ${CONSUMER_VAULT_SECRET_ID:-}
       VAULT_KV_MOUNT: secret
       VAULT_DB_SECRET_PATH: database/postgres
       VAULT_KAFKA_SECRET_PATH: kafka/config
@@ -44,20 +44,19 @@ services:
         condition: service_healthy
       vault:
         condition: service_healthy
-      vault-init:
-        condition: service_completed_successfully
       kafka:
         condition: service_healthy
     restart: unless-stopped
 
   db:
     image: postgres:16
-    container_name: devops_hw_4_db
     restart: unless-stopped
-    env_file:
-      - .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-diabetes}
+      POSTGRES_USER: ${POSTGRES_USER:-diabetes}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./db:/docker-entrypoint-initdb.d:ro
@@ -69,45 +68,23 @@ services:
 
   vault:
     image: hashicorp/vault:1.17
-    container_name: devops_hw_4_vault
     restart: unless-stopped
     cap_add:
       - IPC_LOCK
-    env_file:
-      - .env
-    environment:
-      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_TOKEN}
-      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+    volumes:
+      - vault_data:/vault/file
+      - ./vault/server.hcl:/vault/config/server.hcl:ro
     ports:
-      - "8200:8200"
-    command: server -dev
+      - "127.0.0.1:8201:8200"
+    command: server
     healthcheck:
       test: ["CMD-SHELL", "VAULT_ADDR=http://127.0.0.1:8200 vault status >/dev/null 2>&1"]
       interval: 5s
       timeout: 5s
       retries: 20
 
-  vault-init:
-    image: hashicorp/vault:1.17
-    container_name: devops_hw_4_vault_init
-    env_file:
-      - .env
-    environment:
-      VAULT_ADDR: http://vault:8200
-      VAULT_KV_MOUNT: secret
-      VAULT_DB_SECRET_PATH: database/postgres
-      VAULT_KAFKA_SECRET_PATH: kafka/config
-    volumes:
-      - ./vault/init-vault.sh:/vault/init-vault.sh:ro
-    entrypoint: ["/bin/sh", "/vault/init-vault.sh"]
-    depends_on:
-      vault:
-        condition: service_healthy
-    restart: "no"
-
   kafka:
     image: bitnamilegacy/kafka:3.7
-    container_name: devops_hw_4_kafka
     restart: unless-stopped
     environment:
       KAFKA_CFG_NODE_ID: 1
@@ -120,8 +97,6 @@ services:
       KAFKA_CFG_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
       ALLOW_PLAINTEXT_LISTENER: "yes"
-    ports:
-      - "9092:9092"
     volumes:
       - kafka_data:/bitnami/kafka
     healthcheck:
@@ -133,3 +108,4 @@ services:
 volumes:
   pgdata:
   kafka_data:
+  vault_data:

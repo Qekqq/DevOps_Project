@@ -1,57 +1,99 @@
 schema: '2.0'
 stages:
-  preprocess:
-    cmd: python -m src.data_preprocessing
-    deps:
-    - path: config.ini
-      hash: md5
-      md5: caa86f6338212f1916ff7520bcf9e018
-      size: 735
-    - path: data/raw/diabetes.csv
-      hash: md5
-      md5: f2906818eda8fcfc8f8416557ab1e6df
-      size: 23873
-    - path: src/config.py
-      hash: md5
-      md5: 7476875ecb5657df17a1664df884190d
-      size: 1423
-    - path: src/data_preprocessing.py
-      hash: md5
-      md5: 6f50728fbe443088c68d4663c32f8df4
-      size: 7138
-    - path: src/logger.py
-      hash: md5
-      md5: 14364359358d0b4ccb5a0ee97a86bdca
-      size: 1195
   train:
     cmd: python -m src.train
     deps:
     - path: config.ini
       hash: md5
-      md5: caa86f6338212f1916ff7520bcf9e018
-      size: 735
-    - path: data/processed/train.csv
+      md5: c9ff413b0d9ae3d6485c1e20cb6f7fd7
+      size: 310
+    - path: data/raw/diabetes.csv
       hash: md5
-      md5: 80934fe5f52ea9d12ce698a42859f353
-      size: 21826
-    - path: data/processed/valid.csv
+      md5: b43dd020fa775d93fced49f959c227ed
+      size: 23105
+    - path: requirements.txt
       hash: md5
-      md5: 4e521a3cb10a19dc6ab486857ed4463d
-      size: 4569
+      md5: e3ef5de57050e44cdf16894736243aca
+      size: 546
     - path: src/config.py
       hash: md5
-      md5: 7476875ecb5657df17a1664df884190d
-      size: 1423
+      md5: fea9dd9408645c52a9d6a13b6626ec9b
+      size: 1059
+    - path: src/data_preprocessing.py
+      hash: md5
+      md5: ba88a02eec1396b088702952b7409a3c
+      size: 4187
+    - path: src/datasets.py
+      hash: md5
+      md5: fb109837dfd0dd88029a674a535df07f
+      size: 2119
+    - path: src/features.py
+      hash: md5
+      md5: 732b5debf64034abe54a12e1aaff9875
+      size: 636
     - path: src/logger.py
       hash: md5
-      md5: 14364359358d0b4ccb5a0ee97a86bdca
-      size: 1195
+      md5: aaba9c628c3c3d097100452faa402b8d
+      size: 1155
+    - path: src/pipelines.py
+      hash: md5
+      md5: 241df343d17885f04f9a1431c7012444
+      size: 2673
     - path: src/train.py
       hash: md5
-      md5: ad302b68bd37848d0944685a1068a0d2
-      size: 6019
+      md5: ee42df4ee93f1772c31381fde7fb5628
+      size: 6447
+    params:
+      training.json:
+        models:
+          logistic_regression_tuned:
+            family: logistic_regression
+            parameters:
+              solver: liblinear
+              max_iter: 1000
+            preprocessing:
+              imputation: median
+              scale: true
+            search:
+              folds: 5
+              param_grid:
+                classifier__C:
+                - 0.1
+                - 1
+                - 10
+                classifier__class_weight:
+                -
+                - balanced
+          decision_tree_tuned:
+            family: decision_tree
+            parameters: {}
+            preprocessing:
+              imputation: median
+              scale: false
+            search:
+              folds: 5
+              param_grid:
+                classifier__max_depth:
+                - 2
+                - 4
+                - 6
+                classifier__min_samples_leaf:
+                - 1
+                - 10
+                classifier__class_weight:
+                -
+                - balanced
     outs:
-    - path: experiments/best_model/validation_metrics.json
+    - path: models
       hash: md5
-      md5: c23fa1da569b8e0394ab5164d140d4a3
-      size: 352
+      md5: 8cc3f2124e94ad1b3ce49c97f096dbe5.dir
+      size: 54162
+      nfiles: 12
+    - path: reports/metrics.json
+      hash: md5
+      md5: b162b4e10a3b62042f9fad140fc3b630
+      size: 494
+    - path: reports/selected_parameters.json
+      hash: md5
+      md5: a24454939407e06e2385abdedc7bc1ef
+      size: 1008

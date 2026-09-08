@@ -1,11 +1,10 @@
 PYTHON = python
-PIP = pip
-APP = src.app:app
+KEEPASS_DB ?=
 
-.PHONY: install preprocess train test run-api run-api-dev
+.PHONY: install preprocess train test start
 
 install:
-	$(PIP) install -r requirements.txt
+	$(PYTHON) -m pip install -r requirements.txt
 
 preprocess:
 	$(PYTHON) -m src.data_preprocessing
@@ -16,8 +15,5 @@ train:
 test:
 	$(PYTHON) -m pytest tests -v
 
-run-api:
-	uvicorn $(APP) --host 0.0.0.0 --port 8000
-
-run-api-dev:
-	uvicorn $(APP) --host 127.0.0.1 --port 8000 --reload
+start:
+	$(PYTHON) -m scripts.start_stack --keepass-db "$(KEEPASS_DB)"

@@ -5,7 +5,6 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 
 from src.secrets.vault_client import get_database_secrets
 
-
 Base = declarative_base()
 
 _engine = None

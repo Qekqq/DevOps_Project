@@ -1,0 +1,55 @@
+{
+  "models": {
+    "logistic_regression_tuned": {
+      "family": "logistic_regression",
+      "parameters": {
+        "solver": "liblinear",
+        "max_iter": 1000
+      },
+      "preprocessing": {
+        "imputation": "median",
+        "scale": true
+      },
+      "search": {
+        "folds": 5,
+        "param_grid": {
+          "classifier__C": [
+            0.1,
+            1,
+            10
+          ],
+          "classifier__class_weight": [
+            null,
+            "balanced"
+          ]
+        }
+      }
+    },
+    "decision_tree_tuned": {
+      "family": "decision_tree",
+      "parameters": {},
+      "preprocessing": {
+        "imputation": "median",
+        "scale": false
+      },
+      "search": {
+        "folds": 5,
+        "param_grid": {
+          "classifier__max_depth": [
+            2,
+            4,
+            6
+          ],
+          "classifier__min_samples_leaf": [
+            1,
+            10
+          ],
+          "classifier__class_weight": [
+            null,
+            "balanced"
+          ]
+        }
+      }
+    }
+  }
+}

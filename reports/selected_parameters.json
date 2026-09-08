@@ -1,0 +1,35 @@
+{
+  "logistic_regression_tuned": {
+    "version": "20260908T011221Z-80757f04-m1",
+    "dataset_sha256": "b78029447fae2743b3218bb2b76ef0d04afe8d7e55ce2faf4d1ec82d8f8ae8ac",
+    "preprocessing": {
+      "imputation": "median",
+      "scale": true
+    },
+    "search_result": {
+      "method": "GridSearchCV",
+      "best_params": {
+        "classifier__C": 0.1,
+        "classifier__class_weight": "balanced"
+      },
+      "best_cv_f1": 0.6458144649372719
+    }
+  },
+  "decision_tree_tuned": {
+    "version": "20260908T011221Z-80757f04-m2",
+    "dataset_sha256": "b78029447fae2743b3218bb2b76ef0d04afe8d7e55ce2faf4d1ec82d8f8ae8ac",
+    "preprocessing": {
+      "imputation": "median",
+      "scale": false
+    },
+    "search_result": {
+      "method": "GridSearchCV",
+      "best_params": {
+        "classifier__class_weight": "balanced",
+        "classifier__max_depth": 4,
+        "classifier__min_samples_leaf": 10
+      },
+      "best_cv_f1": 0.632228255488304
+    }
+  }
+}

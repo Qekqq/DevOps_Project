@@ -2,7 +2,6 @@ import logging
 import sys
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 LOGS_DIR = PROJECT_ROOT / "logs"
 LOG_FILE = LOGS_DIR / "app.log"

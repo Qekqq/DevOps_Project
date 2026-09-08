@@ -1,8 +1,7 @@
 import os
-from functools import lru_cache
 
 import hvac
-
+from requests import RequestException
 
 REQUIRED_DATABASE_SECRET_KEYS = [
     "POSTGRES_HOST",
@@ -32,7 +31,7 @@ def get_required_env(name: str) -> str:
     value = os.getenv(name)
 
     if not value:
-        raise VaultSecretError(f"Environment variable {name} is not set")
+        raise VaultSecretError(f"Не задана переменная окружения {name}")
 
     return value
 
@@ -42,15 +41,18 @@ def get_vault_client() -> hvac.Client:
     Создаёт клиент для подключения к Hashicorp Vault.
     """
     vault_addr = get_required_env("VAULT_ADDR")
-    vault_token = get_required_env("VAULT_TOKEN")
-
-    client = hvac.Client(
-        url=vault_addr,
-        token=vault_token,
-    )
-
-    if not client.is_authenticated():
-        raise VaultSecretError("Vault authentication failed")
+    client = hvac.Client(url=vault_addr)
+    try:
+        client.auth.approle.login(
+            role_id=get_required_env("VAULT_ROLE_ID"),
+            secret_id=get_required_env("VAULT_SECRET_ID"),
+        )
+        if not client.is_authenticated():
+            raise VaultSecretError("Не удалось авторизоваться в Vault")
+    except (hvac.exceptions.VaultError, RequestException) as error:
+        raise VaultSecretError(
+            "Vault недоступен или отклонил авторизацию сервиса"
+        ) from error
 
     return client
 
@@ -71,7 +73,7 @@ def read_vault_secret(path_env_name: str, default_path: str) -> dict:
         )
     except Exception as error:
         raise VaultSecretError(
-            f"Failed to read secret from Vault path {secret_path}: {error}"
+            f"Не удалось прочитать секрет Vault: {secret_path}"
         ) from error
 
     return response["data"]["data"]
@@ -86,22 +88,17 @@ def validate_secret_keys(
     Проверяет, что в секрете есть все обязательные ключи.
     """
     missing_keys = [
-        key for key in required_keys
-        if key not in secrets or secrets[key] in (None, "")
+        key for key in required_keys if key not in secrets or secrets[key] in (None, "")
     ]
 
     if missing_keys:
         raise VaultSecretError(
-            f"Missing {secret_name} secrets in Vault: {missing_keys}"
+            f"В Vault отсутствуют параметры {secret_name}: {missing_keys}"
         )
 
-    return {
-        key: str(secrets[key])
-        for key in required_keys
-    }
+    return {key: str(secrets[key]) for key in required_keys}
 
 
-@lru_cache
 def get_database_secrets() -> dict[str, str]:
     """
     Получает параметры подключения к PostgreSQL из Hashicorp Vault.
@@ -118,7 +115,6 @@ def get_database_secrets() -> dict[str, str]:
     )
 
 
-@lru_cache
 def get_kafka_secrets() -> dict[str, str]:
     """
     Получает параметры подключения к Kafka из Hashicorp Vault.

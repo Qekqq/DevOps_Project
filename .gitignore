@@ -13,6 +13,8 @@ __pycache__/
 
 # Environment variables
 .env
+*.kdbx
+*.keyx
 
 # IDE
 .vscode/
@@ -23,6 +25,7 @@ Thumbs.db
 
 # Pytest / coverage
 .pytest_cache/
+.ruff_cache/
 .coverage
 htmlcov/
 
@@ -32,3 +35,7 @@ htmlcov/
 # Logs
 logs/
 *.log
+/models
+/.local-history/
+/backups/
+/data/feedback/

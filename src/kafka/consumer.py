@@ -1,15 +1,21 @@
 import json
+import re
 import time
+from datetime import date
 
-from kafka import KafkaConsumer
 from kafka.errors import NoBrokersAvailable
-from sqlalchemy.exc import SQLAlchemyError
+from kafka.structs import OffsetAndMetadata
 
+from kafka import KafkaConsumer, TopicPartition
 from src.db.database import get_session_factory
-from src.db.repositories import require_champion_model, save_prediction_history
+from src.db.repositories import (
+    DuplicatePredictionError,
+    require_model_version,
+    save_prediction_history,
+)
+from src.kafka.shadow import predict_challengers
 from src.logger import get_logger
 from src.secrets.vault_client import get_kafka_secrets
-
 
 logger = get_logger(__name__)
 
@@ -20,10 +26,16 @@ def save_message_to_database(message: dict) -> None:
 
     Параметры подключения к БД берутся из Vault (внутри get_session_factory).
     """
+    study_date_text = message["study_date"]
+    if not isinstance(study_date_text, str) or not re.fullmatch(
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}", study_date_text
+    ):
+        raise ValueError("Укажите дату исследования в формате ГГГГ-ММ-ДД")
+    study_date = date.fromisoformat(study_date_text)
     session_factory = get_session_factory()
 
     with session_factory() as db:
-        model_version = require_champion_model(db)
+        model_version = require_model_version(db, message["model_version"])
 
         save_prediction_history(
             db=db,
@@ -31,9 +43,12 @@ def save_message_to_database(message: dict) -> None:
             prediction=message["prediction"],
             probability=message.get("probability"),
             model_version=model_version,
+            study_date=study_date,
             patient_code=message.get("patient_code"),
             request_source=message.get("request_source", "api"),
             response_time_ms=message.get("response_time_ms"),
+            # В старых сообщениях поле отсутствует: producer публиковал champion.
+            role_at_prediction=message.get("role_at_prediction", "champion"),
         )
 
         db.commit()
@@ -53,10 +68,11 @@ def create_consumer() -> KafkaConsumer:
                 group_id=kafka_settings["KAFKA_CONSUMER_GROUP"],
                 value_deserializer=lambda value: json.loads(value.decode("utf-8")),
                 auto_offset_reset="earliest",
-                enable_auto_commit=True,
+                enable_auto_commit=False,
+                max_poll_records=1,
             )
 
-            logger.info("Kafka consumer connected.")
+            logger.info("Kafka consumer подключён.")
             return consumer
 
         except NoBrokersAvailable:
@@ -70,20 +86,31 @@ def run() -> None:
     """
     Запускает бесконечный цикл приёма сообщений из Kafka.
     """
-    logger.info("Starting Kafka consumer service...")
+    logger.info("Запуск Kafka consumer...")
     consumer = create_consumer()
 
-    for record in consumer:
-        message = record.value
-
-        try:
-            save_message_to_database(message)
-            logger.info(
-                "Прогноз из Kafka сохранён в БД (patient=%s).",
-                message.get("patient_code"),
+    try:
+        for record in consumer:
+            message = record.value
+            try:
+                save_message_to_database(message)
+            except DuplicatePredictionError:
+                logger.info(
+                    "Повторный прогноз пропущен (patient=%s).",
+                    message.get("patient_code"),
+                )
+            predict_challengers(message)
+            # Любая другая ошибка прерывает обработку без подтверждения offset.
+            # После перезапуска сообщение будет прочитано снова.
+            consumer.commit(
+                {
+                    TopicPartition(record.topic, record.partition): OffsetAndMetadata(
+                        record.offset + 1, ""
+                    )
+                }
             )
-        except (KeyError, RuntimeError, SQLAlchemyError) as error:
-            logger.error("Не удалось сохранить сообщение из Kafka в БД: %s", error)
+    finally:
+        consumer.close()
 
 
 if __name__ == "__main__":

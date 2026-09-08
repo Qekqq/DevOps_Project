@@ -1,10 +1,8 @@
 import json
 
 from kafka import KafkaProducer
-
 from src.logger import get_logger
 from src.secrets.vault_client import get_kafka_secrets
-
 
 logger = get_logger(__name__)
 
@@ -30,7 +28,7 @@ def get_producer() -> KafkaProducer:
             retries=3,
         )
 
-        logger.info("Kafka producer initialized.")
+        logger.info("Kafka producer подключён.")
 
     return _producer
 
@@ -43,7 +41,6 @@ def send_prediction_message(message: dict, key: str | None = None) -> None:
     topic = kafka_settings["KAFKA_PREDICTION_TOPIC"]
 
     producer = get_producer()
-    producer.send(topic, value=message, key=key)
-    producer.flush(timeout=10)
+    producer.send(topic, value=message, key=key).get(timeout=10)
 
-    logger.info("Prediction message published to topic '%s'.", topic)
+    logger.info("Прогноз опубликован в топике '%s'.", topic)
