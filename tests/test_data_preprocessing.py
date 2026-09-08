@@ -1,4 +1,5 @@
 import pandas as pd
+
 from src.data_preprocessing import DataPreprocessor
 
 
@@ -8,7 +9,9 @@ def test_splits_are_disjoint_repeatable_and_preserve_original_values():
     first = processor.split_data(raw)
     second = processor.split_data(raw)
     parts = [set(part.index) for part in first[:3]]
-    assert not parts[0] & parts[1] and not parts[0] & parts[2] and not parts[1] & parts[2]
+    assert (
+        not parts[0] & parts[1] and not parts[0] & parts[2] and not parts[1] & parts[2]
+    )
     assert set.union(*parts) == set(raw.index)
     for X, y, again in zip(first[:3], first[3:], second[:3]):
         pd.testing.assert_frame_equal(X, again)

@@ -1,13 +1,16 @@
-from datetime import date
 import re
+from datetime import date
+from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class DiabetesInput(BaseModel):
     """
     Схема входных данных для предсказания диабета.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     patient_code: str = Field(
         ...,
@@ -24,8 +27,12 @@ class DiabetesInput(BaseModel):
     )
     pregnancies: int = Field(..., ge=0, le=20, description="Количество беременностей.")
     glucose: float = Field(..., ge=0, le=600, description="Уровень глюкозы.")
-    blood_pressure: float = Field(..., ge=0, le=200, description="Артериальное давление.")
-    skin_thickness: float = Field(..., ge=0, le=110, description="Толщина кожной складки.")
+    blood_pressure: float = Field(
+        ..., ge=0, le=200, description="Артериальное давление."
+    )
+    skin_thickness: float = Field(
+        ..., ge=0, le=110, description="Толщина кожной складки."
+    )
     insulin: float = Field(..., ge=0, le=1000, description="Уровень инсулина.")
     bmi: float = Field(..., ge=0, le=100, description="Индекс массы тела.")
     diabetes_pedigree_function: float = Field(
@@ -36,13 +43,32 @@ class DiabetesInput(BaseModel):
     )
     age: int = Field(..., gt=0, le=120, description="Возраст.")
 
+    @field_validator(
+        "pregnancies",
+        "glucose",
+        "blood_pressure",
+        "skin_thickness",
+        "insulin",
+        "bmi",
+        "diabetes_pedigree_function",
+        "age",
+        mode="before",
+    )
+    @classmethod
+    def reject_boolean_measurements(cls, value):
+        if isinstance(value, bool):
+            raise ValueError("Укажите число, а не логическое значение")
+        return value
+
     @field_validator("study_date", mode="before")
     @classmethod
     def validate_study_date(cls, value: object) -> object:
         """Принимает календарную дату; время и числовые timestamps запрещены."""
         if type(value) is date:
             return value
-        if isinstance(value, str) and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
+        if isinstance(value, str) and re.fullmatch(
+            r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value
+        ):
             return value
         raise ValueError("Укажите дату исследования без времени в формате ГГГГ-ММ-ДД")
 
@@ -66,12 +92,16 @@ class PredictionResponse(BaseModel):
     Схема ответа API с результатом предсказания.
     """
 
-    prediction: int = Field(..., description="Класс предсказания: 0 или 1.")
-    probability: float | None = Field(
-        default=None,
+    prediction: Literal[0, 1] = Field(..., description="Класс предсказания: 0 или 1.")
+    probability: float = Field(
+        ...,
+        ge=0,
+        le=1,
         description="Вероятность положительного класса.",
     )
-    label: str = Field(..., description="Текстовая интерпретация результата.")
+    label: Literal["detected", "not_detected"] = Field(
+        ..., description="Текстовая интерпретация результата."
+    )
 
 
 class HealthResponse(BaseModel):

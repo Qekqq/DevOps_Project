@@ -1,21 +1,21 @@
-from unittest.mock import MagicMock, Mock
 from types import SimpleNamespace
+from unittest.mock import MagicMock, Mock
 
 import pytest
-from sqlalchemy.exc import SQLAlchemyError
 from fastapi.testclient import TestClient
- 
+from sqlalchemy.exc import SQLAlchemyError
+
 import src.app as app_module
 from src.predict import DiabetesPredictor
 
 TEST_PREDICTOR = DiabetesPredictor()
- 
- 
+
+
 @pytest.fixture(autouse=True)
 def mock_kafka_layer(monkeypatch):
     """
     Mocks the Kafka producer for API unit tests.
- 
+
     Real Kafka publishing is verified separately through docker-compose and the
     CD functional tests. These unit tests validate API behavior only.
     """
@@ -24,18 +24,65 @@ def mock_kafka_layer(monkeypatch):
         "send_prediction_message",
         lambda *args, **kwargs: None,
     )
- 
+
     yield
- 
- 
+
+
 client = TestClient(app_module.app)
+
+
+def test_browser_preflight_allows_configured_frontend_only():
+    headers = {
+        "Origin": "http://localhost:5173",
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "content-type,authorization",
+    }
+    allowed = client.options("/predict", headers=headers)
+    assert allowed.status_code == 200
+    assert allowed.headers["access-control-allow-origin"] == headers["Origin"]
+    denied = client.options(
+        "/predict", headers={**headers, "Origin": "https://unknown.example"}
+    )
+    assert denied.status_code == 400
+    assert "access-control-allow-origin" not in denied.headers
+
+
+def test_conflict_during_reservation_is_not_published(monkeypatch):
+    publish = Mock()
+    monkeypatch.setattr(app_module, "send_prediction_message", publish)
+    monkeypatch.setattr(
+        app_module,
+        "get_or_create_study",
+        Mock(
+            side_effect=app_module.StudyConflictError(
+                "На эту дату уже сохранено исследование с другими данными."
+            ),
+        ),
+    )
+    response = client.post("/predict", json=VALID_INPUT)
+    assert response.status_code == 409
+    publish.assert_not_called()
+
+
+def test_validation_messages_are_russian_and_do_not_echo_input():
+    response = client.post("/predict", json={**VALID_INPUT, "age": True})
+    assert response.status_code == 422
+    error = response.json()["detail"][0]
+    assert error["msg"] == "Укажите число, а не логическое значение"
+    assert "input" not in error
 
 
 @pytest.fixture(autouse=True)
 def mock_prediction_lookup(monkeypatch):
     """Изолирует проверку истории от настоящих PostgreSQL и Vault."""
-    monkeypatch.setattr(app_module, "require_champion_model", lambda db: SimpleNamespace(model_version=TEST_PREDICTOR.model_version))
-    monkeypatch.setattr(app_module.model_registry, "from_record", lambda record: TEST_PREDICTOR)
+    monkeypatch.setattr(
+        app_module,
+        "require_champion_model",
+        lambda db: SimpleNamespace(model_version=TEST_PREDICTOR.model_version),
+    )
+    monkeypatch.setattr(
+        app_module.model_registry, "from_record", lambda record: TEST_PREDICTOR
+    )
     db = MagicMock()
     db.__enter__.return_value = db
     db.execute.return_value.scalar_one_or_none.return_value = None
@@ -59,16 +106,29 @@ VALID_INPUT = {
 
 
 def test_champion_switch_changes_predictor_and_message_version(monkeypatch):
-    champions = iter([SimpleNamespace(model_version="v1"), SimpleNamespace(model_version="v2")])
-    monkeypatch.setattr(app_module, "require_champion_model", lambda db: next(champions))
+    champions = iter(
+        [SimpleNamespace(model_version="v1"), SimpleNamespace(model_version="v2")]
+    )
+    monkeypatch.setattr(
+        app_module, "require_champion_model", lambda db: next(champions)
+    )
     results = {
         "v1": {"prediction": 0, "probability": 0.2, "label": "not_detected"},
         "v2": {"prediction": 1, "probability": 0.8, "label": "detected"},
     }
-    monkeypatch.setattr(app_module.model_registry, "from_record",
-                        lambda record: SimpleNamespace(predict=lambda data: results[record.model_version]))
+    monkeypatch.setattr(
+        app_module.model_registry,
+        "from_record",
+        lambda record: SimpleNamespace(
+            predict=lambda data: results[record.model_version]
+        ),
+    )
     published = []
-    monkeypatch.setattr(app_module, "send_prediction_message", lambda message, **kwargs: published.append(message))
+    monkeypatch.setattr(
+        app_module,
+        "send_prediction_message",
+        lambda message, **kwargs: published.append(message),
+    )
     for version in ("v1", "v2"):
         response = client.post("/predict", json=VALID_INPUT)
         assert response.status_code == 200
@@ -79,22 +139,30 @@ def test_champion_switch_changes_predictor_and_message_version(monkeypatch):
 def test_unloadable_champion_returns_503_without_publication(monkeypatch):
     def unavailable(record):
         raise ValueError("checksum mismatch")
+
     monkeypatch.setattr(app_module.model_registry, "from_record", unavailable)
     publish = Mock()
     monkeypatch.setattr(app_module, "send_prediction_message", publish)
     response = client.post("/predict", json=VALID_INPUT)
     assert response.status_code == 503
-    assert response.json()["detail"] == "Основная модель временно недоступна. Повторите попытку позже."
+    assert (
+        response.json()["detail"]
+        == "Основная модель временно недоступна. Повторите попытку позже."
+    )
     publish.assert_not_called()
 
 
 def test_failed_kafka_publication_returns_503(monkeypatch):
     def unavailable(*args, **kwargs):
         raise RuntimeError("broker unavailable")
+
     monkeypatch.setattr(app_module, "send_prediction_message", unavailable)
     response = client.post("/predict", json=VALID_INPUT)
     assert response.status_code == 503
-    assert response.json()["detail"] == "Не удалось передать прогноз на сохранение. Повторите попытку позже."
+    assert (
+        response.json()["detail"]
+        == "Не удалось передать прогноз на сохранение. Повторите попытку позже."
+    )
 
 
 def test_health_check_returns_ok_status():
@@ -212,10 +280,7 @@ def test_predict_rejects_invalid_feature_values(field, lower, upper, case):
     response = client.post("/predict", json=payload)
 
     assert response.status_code == 422
-    assert any(
-        error["loc"] == ["body", field]
-        for error in response.json()["detail"]
-    )
+    assert any(error["loc"] == ["body", field] for error in response.json()["detail"])
 
 
 def test_predict_rejects_zero_age():
@@ -226,18 +291,34 @@ def test_predict_rejects_zero_age():
 
     assert response.status_code == 422
     assert any(
-        error["loc"] == ["body", "age"]
-        and error["type"] == "greater_than"
+        error["loc"] == ["body", "age"] and error["type"] == "greater_than"
         for error in response.json()["detail"]
     )
 
 
-@pytest.mark.parametrize("code", [
-    None, "", "   ", "\t\n", 123,
-    "AB123", "ABCD123", "ABC12", "ABC1234",
-    "123ABC", "AB1123", "ABCDEF", "123456",
-    "ABC-123", "AB 123", "ПАТ001", "ABC１２３", "Aß001",
-])
+@pytest.mark.parametrize(
+    "code",
+    [
+        None,
+        "",
+        "   ",
+        "\t\n",
+        123,
+        "AB123",
+        "ABCD123",
+        "ABC12",
+        "ABC1234",
+        "123ABC",
+        "AB1123",
+        "ABCDEF",
+        "123456",
+        "ABC-123",
+        "AB 123",
+        "ПАТ001",
+        "ABC１２３",
+        "Aß001",
+    ],
+)
 def test_predict_rejects_invalid_patient_code(code):
     payload = VALID_INPUT.copy()
     payload["patient_code"] = code
@@ -246,8 +327,7 @@ def test_predict_rejects_invalid_patient_code(code):
 
     assert response.status_code == 422
     assert any(
-        error["loc"] == ["body", "patient_code"]
-        for error in response.json()["detail"]
+        error["loc"] == ["body", "patient_code"] for error in response.json()["detail"]
     )
 
 
@@ -259,13 +339,14 @@ def test_predict_requires_patient_code():
 
     assert response.status_code == 422
     assert any(
-        error["loc"] == ["body", "patient_code"]
-        and error["type"] == "missing"
+        error["loc"] == ["body", "patient_code"] and error["type"] == "missing"
         for error in response.json()["detail"]
     )
 
 
-@pytest.mark.parametrize("code", ["PAT001", "ABC000", "XYZ999", "pat001", "PaT001", "  PAT001  "])
+@pytest.mark.parametrize(
+    "code", ["PAT001", "ABC000", "XYZ999", "pat001", "PaT001", "  PAT001  "]
+)
 def test_predict_publishes_normalized_patient_code(monkeypatch, code):
     captured = {}
 
@@ -288,16 +369,23 @@ def test_predict_publishes_normalized_patient_code(monkeypatch, code):
     assert captured["message"]["model_version"] == TEST_PREDICTOR.model_version
 
 
-@pytest.mark.parametrize("study_date", [
-    None, "", "08.09.2026", "2026-02-30", "2026-09-08T00:00:00", 1788825600,
-])
+@pytest.mark.parametrize(
+    "study_date",
+    [
+        None,
+        "",
+        "08.09.2026",
+        "2026-02-30",
+        "2026-09-08T00:00:00",
+        1788825600,
+    ],
+)
 def test_predict_rejects_invalid_study_date(study_date):
     response = client.post("/predict", json={**VALID_INPUT, "study_date": study_date})
 
     assert response.status_code == 422
     assert any(
-        error["loc"] == ["body", "study_date"]
-        for error in response.json()["detail"]
+        error["loc"] == ["body", "study_date"] for error in response.json()["detail"]
     )
 
 
@@ -315,32 +403,53 @@ def test_predict_requires_study_date():
 
 
 def test_study_date_is_not_passed_to_prediction_model(monkeypatch):
-    predict = Mock(return_value={"prediction": 1, "probability": 0.81, "label": "detected"})
+    predict = Mock(
+        return_value={"prediction": 1, "probability": 0.81, "label": "detected"}
+    )
     monkeypatch.setattr(TEST_PREDICTOR, "predict", predict)
 
     response = client.post("/predict", json=VALID_INPUT)
 
     assert response.status_code == 200
-    predict.assert_called_once_with({
-        key: value for key, value in VALID_INPUT.items()
-        if key not in {"patient_code", "study_date"}
-    })
+    predict.assert_called_once_with(
+        {
+            key: value
+            for key, value in VALID_INPUT.items()
+            if key not in {"patient_code", "study_date"}
+        }
+    )
 
 
 def test_predict_returns_saved_result_without_prediction_or_publication(
-    monkeypatch, mock_prediction_lookup,
+    monkeypatch,
+    mock_prediction_lookup,
 ):
-    saved_result = {"prediction": 1, "probability": 0.8146575280180618, "label": "detected"}
+    saved_result = {
+        "prediction": 1,
+        "probability": 0.8146575280180618,
+        "label": "detected",
+    }
     mock_prediction_lookup.execute.return_value.scalar_one_or_none.side_effect = [
-        SimpleNamespace(id=19, features={k: v for k, v in VALID_INPUT.items() if k not in {"patient_code", "study_date"}}),
+        SimpleNamespace(
+            id=19,
+            features={
+                k: v
+                for k, v in VALID_INPUT.items()
+                if k not in {"patient_code", "study_date"}
+            },
+        ),
         SimpleNamespace(
             model_version_snapshot=TEST_PREDICTOR.model_version,
             **saved_result,
             inference_payload={
-                "features": {k: v for k, v in VALID_INPUT.items() if k not in {"patient_code", "study_date"}},
+                "features": {
+                    k: v
+                    for k, v in VALID_INPUT.items()
+                    if k not in {"patient_code", "study_date"}
+                },
                 "result": saved_result,
             },
-        )
+        ),
     ]
     predict = Mock()
     publish = Mock()
@@ -356,11 +465,16 @@ def test_predict_returns_saved_result_without_prediction_or_publication(
 
 
 def test_predict_rejects_changed_study_even_for_another_model(
-    monkeypatch, mock_prediction_lookup,
+    monkeypatch,
+    mock_prediction_lookup,
 ):
-    features = {k: v for k, v in VALID_INPUT.items() if k not in {"patient_code", "study_date"}}
+    features = {
+        k: v for k, v in VALID_INPUT.items() if k not in {"patient_code", "study_date"}
+    }
     features["glucose"] = 100
-    mock_prediction_lookup.execute.return_value.scalar_one_or_none.return_value = SimpleNamespace(id=19, features=features)
+    mock_prediction_lookup.execute.return_value.scalar_one_or_none.return_value = (
+        SimpleNamespace(id=19, features=features)
+    )
     predict = Mock()
     publish = Mock()
     monkeypatch.setattr(TEST_PREDICTOR, "predict", predict)
@@ -369,15 +483,24 @@ def test_predict_rejects_changed_study_even_for_another_model(
     response = client.post("/predict", json=VALID_INPUT)
 
     assert response.status_code == 409
-    assert response.json()["detail"] == "На эту дату уже сохранено исследование с другими данными."
+    assert (
+        response.json()["detail"]
+        == "На эту дату уже сохранено исследование с другими данными."
+    )
     predict.assert_not_called()
     publish.assert_not_called()
 
 
-def test_predict_calculates_new_model_for_unchanged_study(monkeypatch, mock_prediction_lookup):
-    features = {k: v for k, v in VALID_INPUT.items() if k not in {"patient_code", "study_date"}}
+def test_predict_calculates_new_model_for_unchanged_study(
+    monkeypatch, mock_prediction_lookup
+):
+    features = {
+        k: v for k, v in VALID_INPUT.items() if k not in {"patient_code", "study_date"}
+    }
     mock_prediction_lookup.execute.return_value.scalar_one_or_none.side_effect = [
-        SimpleNamespace(id=19, features=features), None,
+        SimpleNamespace(id=19, features=features),
+        None,
+        SimpleNamespace(id=19, features=features),
     ]
     result = {"prediction": 0, "probability": 0.3, "label": "not_detected"}
     predict = Mock(return_value=result)
@@ -393,7 +516,9 @@ def test_predict_calculates_new_model_for_unchanged_study(monkeypatch, mock_pred
     publish.assert_called_once()
 
 
-@pytest.mark.parametrize("error", [RuntimeError("Vault unavailable"), SQLAlchemyError("DB unavailable")])
+@pytest.mark.parametrize(
+    "error", [RuntimeError("Vault unavailable"), SQLAlchemyError("DB unavailable")]
+)
 def test_predict_returns_503_when_duplicate_check_fails(monkeypatch, error):
     def unavailable():
         raise error
@@ -407,6 +532,9 @@ def test_predict_returns_503_when_duplicate_check_fails(monkeypatch, error):
     response = client.post("/predict", json=VALID_INPUT)
 
     assert response.status_code == 503
-    assert response.json()["detail"] == "Не удалось подключиться к базе данных. Повторите попытку позже."
+    assert (
+        response.json()["detail"]
+        == "Не удалось подключиться к базе данных. Повторите попытку позже."
+    )
     predict.assert_not_called()
     publish.assert_not_called()

@@ -1,23 +1,21 @@
 import json
+import re
 import time
 from datetime import date
-import re
+
+from kafka.errors import NoBrokersAvailable
+from kafka.structs import OffsetAndMetadata
 
 from kafka import KafkaConsumer, TopicPartition
-from kafka.structs import OffsetAndMetadata
-from kafka.errors import NoBrokersAvailable
-from sqlalchemy.exc import SQLAlchemyError
-
 from src.db.database import get_session_factory
 from src.db.repositories import (
     DuplicatePredictionError,
     require_model_version,
     save_prediction_history,
 )
+from src.kafka.shadow import predict_challengers
 from src.logger import get_logger
 from src.secrets.vault_client import get_kafka_secrets
-from src.kafka.shadow import predict_challengers
-
 
 logger = get_logger(__name__)
 
@@ -29,7 +27,9 @@ def save_message_to_database(message: dict) -> None:
     Параметры подключения к БД берутся из Vault (внутри get_session_factory).
     """
     study_date_text = message["study_date"]
-    if not isinstance(study_date_text, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", study_date_text):
+    if not isinstance(study_date_text, str) or not re.fullmatch(
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}", study_date_text
+    ):
         raise ValueError("Укажите дату исследования в формате ГГГГ-ММ-ДД")
     study_date = date.fromisoformat(study_date_text)
     session_factory = get_session_factory()
@@ -47,6 +47,8 @@ def save_message_to_database(message: dict) -> None:
             patient_code=message.get("patient_code"),
             request_source=message.get("request_source", "api"),
             response_time_ms=message.get("response_time_ms"),
+            # В старых сообщениях поле отсутствует: producer публиковал champion.
+            role_at_prediction=message.get("role_at_prediction", "champion"),
         )
 
         db.commit()
@@ -70,7 +72,7 @@ def create_consumer() -> KafkaConsumer:
                 max_poll_records=1,
             )
 
-            logger.info("Kafka consumer connected.")
+            logger.info("Kafka consumer подключён.")
             return consumer
 
         except NoBrokersAvailable:
@@ -84,7 +86,7 @@ def run() -> None:
     """
     Запускает бесконечный цикл приёма сообщений из Kafka.
     """
-    logger.info("Starting Kafka consumer service...")
+    logger.info("Запуск Kafka consumer...")
     consumer = create_consumer()
 
     try:
@@ -93,11 +95,20 @@ def run() -> None:
             try:
                 save_message_to_database(message)
             except DuplicatePredictionError:
-                logger.info("Повторный прогноз пропущен (patient=%s).", message.get("patient_code"))
+                logger.info(
+                    "Повторный прогноз пропущен (patient=%s).",
+                    message.get("patient_code"),
+                )
             predict_challengers(message)
             # Любая другая ошибка прерывает обработку без подтверждения offset.
             # После перезапуска сообщение будет прочитано снова.
-            consumer.commit({TopicPartition(record.topic, record.partition): OffsetAndMetadata(record.offset + 1, "")})
+            consumer.commit(
+                {
+                    TopicPartition(record.topic, record.partition): OffsetAndMetadata(
+                        record.offset + 1, ""
+                    )
+                }
+            )
     finally:
         consumer.close()
 

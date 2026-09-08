@@ -1,28 +1,5 @@
 schema: '2.0'
 stages:
-  preprocess:
-    cmd: python -m src.data_preprocessing
-    deps:
-    - path: config.ini
-      hash: md5
-      md5: caa86f6338212f1916ff7520bcf9e018
-      size: 735
-    - path: data/raw/diabetes.csv
-      hash: md5
-      md5: f2906818eda8fcfc8f8416557ab1e6df
-      size: 23873
-    - path: src/config.py
-      hash: md5
-      md5: 7476875ecb5657df17a1664df884190d
-      size: 1423
-    - path: src/data_preprocessing.py
-      hash: md5
-      md5: 6f50728fbe443088c68d4663c32f8df4
-      size: 7138
-    - path: src/logger.py
-      hash: md5
-      md5: 14364359358d0b4ccb5a0ee97a86bdca
-      size: 1195
   train:
     cmd: python -m src.train
     deps:

@@ -25,6 +25,7 @@ Thumbs.db
 
 # Pytest / coverage
 .pytest_cache/
+.ruff_cache/
 .coverage
 htmlcov/
 
@@ -37,3 +38,4 @@ logs/
 /models
 /.local-history/
 /backups/
+/data/feedback/

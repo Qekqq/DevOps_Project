@@ -1,9 +1,25 @@
 """Database entities. SQL schema is generated from this metadata."""
-from sqlalchemy import (BigInteger, Boolean, CheckConstraint, Column, Date, DateTime,
-                        Float, ForeignKey, Identity, Index, Integer, Numeric, String,
-                        UniqueConstraint, text)
+
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    Column,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Identity,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
+
 from src.db.database import Base
 from src.features import FEATURE_COLUMNS
 
@@ -51,7 +67,9 @@ class Study(Base):
         CheckConstraint("skin_thickness BETWEEN 0 AND 110"),
         CheckConstraint("insulin BETWEEN 0 AND 1000"),
         CheckConstraint("bmi BETWEEN 0 AND 100"),
-        CheckConstraint("diabetes_pedigree_function > 0 AND diabetes_pedigree_function <= 3"),
+        CheckConstraint(
+            "diabetes_pedigree_function > 0 AND diabetes_pedigree_function <= 3"
+        ),
         CheckConstraint("age > 0 AND age <= 120"),
     )
 
@@ -86,12 +104,17 @@ class Dataset(Base):
 
 class RawDatasetSample(Base):
     __tablename__ = "dataset_rows"
-    dataset_id = Column(BigInteger, ForeignKey("datasets.id", ondelete="RESTRICT"), primary_key=True)
+    dataset_id = Column(
+        BigInteger, ForeignKey("datasets.id", ondelete="RESTRICT"), primary_key=True
+    )
     row_number = Column(Integer, primary_key=True)
     source_study_id = Column(BigInteger, ForeignKey("studies.id", ondelete="RESTRICT"))
     features = Column(JSONB, nullable=False)
     outcome = Column(Integer, nullable=False)
-    __table_args__ = (CheckConstraint("row_number >= 0"), CheckConstraint("outcome IN (0,1)"),)
+    __table_args__ = (
+        CheckConstraint("row_number >= 0"),
+        CheckConstraint("outcome IN (0,1)"),
+    )
 
     @property
     def sample_values(self):
@@ -107,7 +130,9 @@ class TrainingRun(Base):
     __tablename__ = "training_runs"
     id = identifier()
     release_id = Column(String(64), nullable=False, unique=True)
-    dataset_id = Column(BigInteger, ForeignKey("datasets.id", ondelete="RESTRICT"), nullable=False)
+    dataset_id = Column(
+        BigInteger, ForeignKey("datasets.id", ondelete="RESTRICT"), nullable=False
+    )
     configuration = Column(JSONB, nullable=False)
     provenance = Column(JSONB, nullable=False)
     created_at = timestamp()
@@ -119,7 +144,9 @@ class ModelVersion(Base):
     model_name = Column(String(100), nullable=False)
     model_version = Column(String(50), nullable=False, unique=True)
     family = Column(String(100), nullable=False)
-    training_run_id = Column(BigInteger, ForeignKey("training_runs.id", ondelete="RESTRICT"), nullable=False)
+    training_run_id = Column(
+        BigInteger, ForeignKey("training_runs.id", ondelete="RESTRICT"), nullable=False
+    )
     artifact_path = Column(String(1024), nullable=False)
     artifact_sha256 = Column(String(64), nullable=False)
     artifact_format = Column(String(30), nullable=False)
@@ -131,16 +158,24 @@ class ModelVersion(Base):
     __table_args__ = (
         CheckConstraint("role IN ('champion','challenger','archived')"),
         CheckConstraint("artifact_sha256 ~ '^[a-f0-9]{64}$'"),
-        Index("uq_model_versions_single_champion", "role", unique=True,
-              postgresql_where=text("role = 'champion'")),
+        Index(
+            "uq_model_versions_single_champion",
+            "role",
+            unique=True,
+            postgresql_where=text("role = 'champion'"),
+        ),
     )
 
 
 class PredictionHistory(Base):
     __tablename__ = "predictions"
     id = identifier()
-    study_id = Column(BigInteger, ForeignKey("studies.id", ondelete="RESTRICT"), nullable=False)
-    model_version_id = Column(BigInteger, ForeignKey("model_versions.id", ondelete="RESTRICT"), nullable=False)
+    study_id = Column(
+        BigInteger, ForeignKey("studies.id", ondelete="RESTRICT"), nullable=False
+    )
+    model_version_id = Column(
+        BigInteger, ForeignKey("model_versions.id", ondelete="RESTRICT"), nullable=False
+    )
     prediction = Column(Integer, nullable=False)
     probability = Column(Float, nullable=False)
     role_at_prediction = Column(String(20), nullable=False)
@@ -150,7 +185,9 @@ class PredictionHistory(Base):
     study = relationship("Study")
     model_version = relationship("ModelVersion")
     __table_args__ = (
-        UniqueConstraint("study_id", "model_version_id", name="uq_prediction_study_model"),
+        UniqueConstraint(
+            "study_id", "model_version_id", name="uq_prediction_study_model"
+        ),
         CheckConstraint("prediction IN (0,1)"),
         CheckConstraint("probability BETWEEN 0 AND 1"),
         CheckConstraint("role_at_prediction IN ('champion','challenger')"),
@@ -166,7 +203,12 @@ class PredictionHistory(Base):
 class PredictionFeedback(Base):
     __tablename__ = "feedback"
     id = identifier()
-    study_id = Column(BigInteger, ForeignKey("studies.id", ondelete="RESTRICT"), nullable=False, unique=True)
+    study_id = Column(
+        BigInteger,
+        ForeignKey("studies.id", ondelete="RESTRICT"),
+        nullable=False,
+        unique=True,
+    )
     created_by_user_id = Column(BigInteger, ForeignKey("users.id", ondelete="RESTRICT"))
     true_label = Column(Integer, nullable=False)
     created_at = timestamp()
@@ -177,18 +219,25 @@ class PredictionFeedback(Base):
 class FeedbackHistory(Base):
     __tablename__ = "feedback_history"
     id = identifier()
-    study_id = Column(BigInteger, ForeignKey("studies.id", ondelete="RESTRICT"), nullable=False)
+    study_id = Column(
+        BigInteger, ForeignKey("studies.id", ondelete="RESTRICT"), nullable=False
+    )
     old_label = Column(Integer)
     new_label = Column(Integer, nullable=False)
     changed_by = Column(BigInteger, ForeignKey("users.id", ondelete="RESTRICT"))
     changed_at = timestamp()
-    __table_args__ = (CheckConstraint("old_label IS NULL OR old_label IN (0,1)"), CheckConstraint("new_label IN (0,1)"),)
+    __table_args__ = (
+        CheckConstraint("old_label IS NULL OR old_label IN (0,1)"),
+        CheckConstraint("new_label IN (0,1)"),
+    )
 
 
 class ModelRoleHistory(Base):
     __tablename__ = "model_role_history"
     id = identifier()
-    model_version_id = Column(BigInteger, ForeignKey("model_versions.id", ondelete="RESTRICT"), nullable=False)
+    model_version_id = Column(
+        BigInteger, ForeignKey("model_versions.id", ondelete="RESTRICT"), nullable=False
+    )
     old_role = Column(String(20))
     new_role = Column(String(20), nullable=False)
     changed_by = Column(BigInteger, ForeignKey("users.id", ondelete="RESTRICT"))

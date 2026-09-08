@@ -1,12 +1,12 @@
-import pytest
+from datetime import date
 from types import SimpleNamespace
 from unittest.mock import Mock
-from datetime import date
+
+import pytest
 from kafka.errors import NoBrokersAvailable
 
 import src.kafka.consumer as consumer_module
 import src.kafka.producer as producer_module
-
 
 KAFKA_SETTINGS = {
     "KAFKA_BOOTSTRAP_SERVERS": "kafka:9092",
@@ -17,8 +17,8 @@ KAFKA_SETTINGS = {
 
 VALID_MESSAGE = {
     "study_date": "2026-09-08",
-    "model_version": "lab2-1.0.0",
-    "patient_code": "TEST-001",
+    "model_version": "release-m1",
+    "patient_code": "TST001",
     "features": {"glucose": 148, "bmi": 33.6},
     "prediction": 1,
     "probability": 0.81,
@@ -71,9 +71,9 @@ def test_send_prediction_message_publishes_to_topic(monkeypatch):
     monkeypatch.setattr(producer_module, "get_kafka_secrets", lambda: KAFKA_SETTINGS)
     monkeypatch.setattr(producer_module, "get_producer", lambda: fake_producer)
 
-    producer_module.send_prediction_message(VALID_MESSAGE, key="TEST-001")
+    producer_module.send_prediction_message(VALID_MESSAGE, key="TST001")
 
-    assert fake_producer.sent == [("prediction-results", VALID_MESSAGE, "TEST-001")]
+    assert fake_producer.sent == [("prediction-results", VALID_MESSAGE, "TST001")]
     assert fake_producer.flushed is True
 
 
@@ -98,9 +98,10 @@ def test_save_message_to_database_persists_prediction(monkeypatch):
     fake_db = FakeDb()
     captured = {}
 
-    monkeypatch.setattr(consumer_module, "get_session_factory", lambda: (lambda: fake_db))
+    monkeypatch.setattr(consumer_module, "get_session_factory", lambda: lambda: fake_db)
+
     def lookup_model(db, version):
-        assert version == "lab2-1.0.0"
+        assert version == "release-m1"
         return "message-model"
 
     monkeypatch.setattr(consumer_module, "require_model_version", lookup_model)
@@ -116,7 +117,7 @@ def test_save_message_to_database_persists_prediction(monkeypatch):
     assert captured["features"] == {"glucose": 148, "bmi": 33.6}
     assert captured["model_version"] == "message-model"
     assert captured["study_date"] == date(2026, 9, 8)
-    assert captured["patient_code"] == "TEST-001"
+    assert captured["patient_code"] == "TST001"
     assert fake_db.committed is True
 
 
@@ -142,12 +143,17 @@ def test_create_consumer_retries_until_broker_available(monkeypatch):
 
 @pytest.mark.parametrize("fails", [False, True])
 def test_consumer_acknowledges_only_successful_database_write(monkeypatch, fails):
-    record = SimpleNamespace(value=VALID_MESSAGE, topic="predictions", partition=0, offset=8)
+    record = SimpleNamespace(
+        value=VALID_MESSAGE, topic="predictions", partition=0, offset=8
+    )
+
     class Consumer:
         commit = Mock()
         close = Mock()
+
         def __iter__(self):
             return iter([record])
+
     consumer = Consumer()
     monkeypatch.setattr(consumer_module, "create_consumer", lambda: consumer)
     monkeypatch.setattr(consumer_module, "predict_challengers", Mock())

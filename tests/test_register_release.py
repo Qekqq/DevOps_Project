@@ -7,10 +7,28 @@ from src.register_release import register_release
 
 
 def manifest():
-    return {"release": "r1", "dataset": {}, "provenance": {}, "champion_version": "v1",
-        "models": [{"name": "tree", "version": "v1", "artifact_path": "models/v1/model.joblib",
-                    "artifact_sha256": "a" * 64, "format": "full-pipeline-v1", "parameters": {"family": "decision_tree"},
-                    "validation": {"accuracy": .8, "precision": .8, "recall": .8, "f1": .8}}]}
+    return {
+        "release": "r1",
+        "dataset": {},
+        "provenance": {},
+        "champion_version": "v1",
+        "models": [
+            {
+                "name": "tree",
+                "version": "v1",
+                "artifact_path": "models/v1/model.joblib",
+                "artifact_sha256": "a" * 64,
+                "format": "full-pipeline-v1",
+                "parameters": {"family": "decision_tree"},
+                "validation": {
+                    "accuracy": 0.8,
+                    "precision": 0.8,
+                    "recall": 0.8,
+                    "f1": 0.8,
+                },
+            }
+        ],
+    }
 
 
 def test_registration_does_not_promote_recommended_champion():
@@ -28,10 +46,17 @@ def test_registration_refuses_reusing_version_for_different_file():
     db = Mock()
     spec = manifest()
     db.execute.return_value.scalar_one_or_none.side_effect = [
-        SimpleNamespace(id=1, dataset_id=1, provenance=spec["provenance"],
-                        configuration={"dataset": spec["dataset"], "models": spec["models"],
-                                       "champion_version": spec["champion_version"]}),
-        SimpleNamespace(artifact_sha256="b" * 64),
+        SimpleNamespace(
+            id=1,
+            dataset_id=1,
+            provenance=spec["provenance"],
+            configuration={
+                "dataset": spec["dataset"],
+                "models": spec["models"],
+                "champion_version": spec["champion_version"],
+            },
+        ),
+        SimpleNamespace(artifact_sha256="b" * 64, training_run_id=1),
     ]
     with pytest.raises(ValueError):
         register_release(manifest(), db, dataset_id=1)

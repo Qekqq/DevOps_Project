@@ -1,2 +1,0 @@
--- Models and datasets are registered from models/current.json by src.register_release.
--- No hard-coded accounts, patients or model versions.

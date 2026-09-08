@@ -1,8 +1,8 @@
 """Резервная копия PostgreSQL без вывода паролей и данных в терминал."""
 
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-import subprocess
 
 
 def main():
@@ -12,7 +12,13 @@ def main():
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     path = folder / f"postgres-{stamp}.dump"
     command = [
-        "docker", "compose", "exec", "-T", "db", "sh", "-c",
+        "docker",
+        "compose",
+        "exec",
+        "-T",
+        "db",
+        "sh",
+        "-c",
         'exec pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc',
     ]
     with path.open("xb") as output:
@@ -22,7 +28,10 @@ def main():
     with path.open("rb") as source:
         subprocess.run(
             ["docker", "compose", "exec", "-T", "db", "pg_restore", "--list"],
-            cwd=root, stdin=source, stdout=subprocess.DEVNULL, check=True,
+            cwd=root,
+            stdin=source,
+            stdout=subprocess.DEVNULL,
+            check=True,
         )
     print(f"Архив создан, оглавление проверено: {path}")
     print("Это проверка формата архива; полное восстановление проверяется отдельно.")

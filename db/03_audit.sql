@@ -61,3 +61,21 @@ BEGIN
 END $$;
 CREATE TRIGGER immutable_model BEFORE UPDATE OR DELETE ON model_versions
 FOR EACH ROW EXECUTE FUNCTION protect_model_version();
+
+CREATE FUNCTION protect_feedback_identity() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        RAISE EXCEPTION 'Correct feedback instead of deleting it';
+    END IF;
+    IF (to_jsonb(NEW) - ARRAY['true_label', 'created_by_user_id', 'updated_at'])
+       IS DISTINCT FROM (to_jsonb(OLD) - ARRAY['true_label', 'created_by_user_id', 'updated_at']) THEN
+        RAISE EXCEPTION 'Feedback must remain attached to its original study';
+    END IF;
+    IF NEW.true_label = OLD.true_label THEN
+        NEW.updated_at := OLD.updated_at;
+        NEW.created_by_user_id := OLD.created_by_user_id;
+    END IF;
+    RETURN NEW;
+END $$;
+CREATE TRIGGER feedback_identity_guard BEFORE UPDATE OR DELETE ON feedback
+FOR EACH ROW EXECUTE FUNCTION protect_feedback_identity();

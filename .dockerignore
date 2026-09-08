@@ -23,6 +23,7 @@ __pycache__/
 *.pyd
 
 .pytest_cache/
+.ruff_cache/
 .coverage
 htmlcov/
 

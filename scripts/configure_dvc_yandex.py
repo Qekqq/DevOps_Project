@@ -1,7 +1,7 @@
 """Сохранение доступа к DVC в локальном файле, исключённом из Git."""
 
-import configparser
 import argparse
+import configparser
 import os
 from getpass import getpass
 from pathlib import Path

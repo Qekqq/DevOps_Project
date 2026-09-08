@@ -1,11 +1,10 @@
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
-from src.config import load_config, get_path
-from src.logger import get_logger
-
-from src.features import RAW_TO_CANONICAL_COLUMNS, FEATURE_COLUMNS, TARGET_COLUMN
+from src.config import get_path, load_config
 from src.datasets import read_raw_dataset
+from src.features import FEATURE_COLUMNS, TARGET_COLUMN
+from src.logger import get_logger
 
 
 class DataPreprocessor:
@@ -20,11 +19,12 @@ class DataPreprocessor:
         self.raw_data_path = get_path(self.config, "paths", "raw_data_path")
 
         self.target_column = self.config.get("training", "target_column")
+        if self.target_column != TARGET_COLUMN:
+            raise ValueError("Целевая колонка проекта должна называться outcome")
         self.train_size = self.config.getfloat("training", "train_size")
         self.valid_size = self.config.getfloat("training", "valid_size")
         self.test_size = self.config.getfloat("training", "test_size")
         self.random_state = self.config.getint("training", "random_state")
-
 
     def load_data(self) -> pd.DataFrame:
         """
@@ -41,8 +41,7 @@ class DataPreprocessor:
         required_columns = FEATURE_COLUMNS + [TARGET_COLUMN]
 
         missing_columns = [
-            column for column in required_columns
-            if column not in df.columns
+            column for column in required_columns if column not in df.columns
         ]
 
         if missing_columns:
@@ -58,7 +57,9 @@ class DataPreprocessor:
     def split_data(
         self,
         df: pd.DataFrame,
-    ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Series, pd.Series, pd.Series]:
+    ) -> tuple[
+        pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Series, pd.Series, pd.Series
+    ]:
         """
         Делит данные на train, validation и test выборки со стратификацией по целевой переменной.
         """
@@ -85,7 +86,9 @@ class DataPreprocessor:
             stratify=y,
         )
 
-        valid_size_from_train_valid = self.valid_size / (self.train_size + self.valid_size)
+        valid_size_from_train_valid = self.valid_size / (
+            self.train_size + self.valid_size
+        )
 
         X_train, X_valid, y_train, y_valid = train_test_split(
             X_train_valid,
@@ -104,7 +107,14 @@ class DataPreprocessor:
     def run(self) -> None:
         frame = self.load_data()
         splits = self.split_data(frame)
-        print({"rows": len(frame), "train": len(splits[0]), "validation": len(splits[1]), "test": len(splits[2])})
+        print(
+            {
+                "rows": len(frame),
+                "train": len(splits[0]),
+                "validation": len(splits[1]),
+                "test": len(splits[2]),
+            }
+        )
 
 
 if __name__ == "__main__":

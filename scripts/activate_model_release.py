@@ -26,9 +26,16 @@ def main():
         for version, spec in versions.items():
             record = registered.get(version)
             if record is None or record.artifact_sha256 != spec["artifact_sha256"]:
-                raise ValueError("Выпуск не зарегистрирован или контрольная сумма отличается")
-            if record.artifact_path != spec["artifact_path"] or record.artifact_format != spec["format"]:
-                raise ValueError("Путь или формат зарегистрированного артефакта отличается")
+                raise ValueError(
+                    "Выпуск не зарегистрирован или контрольная сумма отличается"
+                )
+            if (
+                record.artifact_path != spec["artifact_path"]
+                or record.artifact_format != spec["format"]
+            ):
+                raise ValueError(
+                    "Путь или формат зарегистрированного артефакта отличается"
+                )
         for record in records:
             record.role = "archived"
         db.flush()

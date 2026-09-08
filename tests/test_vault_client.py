@@ -1,8 +1,19 @@
 from unittest.mock import MagicMock
 
 import pytest
+from requests import ConnectionError
 
 from src.secrets import vault_client
+
+
+def test_connection_error_is_translated_to_service_error(monkeypatch):
+    for key in ("VAULT_ADDR", "VAULT_ROLE_ID", "VAULT_SECRET_ID"):
+        monkeypatch.setenv(key, "test")
+    client = MagicMock()
+    client.auth.approle.login.side_effect = ConnectionError("unreachable")
+    monkeypatch.setattr(vault_client.hvac, "Client", lambda **kwargs: client)
+    with pytest.raises(vault_client.VaultSecretError):
+        vault_client.get_vault_client()
 
 
 def test_app_uses_approle_without_root_token(monkeypatch):
@@ -14,7 +25,9 @@ def test_app_uses_approle_without_root_token(monkeypatch):
     monkeypatch.setattr(vault_client.hvac, "Client", factory)
     client = vault_client.get_vault_client()
     factory.assert_called_once_with(url="http://vault:8200")
-    client.auth.approle.login.assert_called_once_with(role_id="api-role", secret_id="api-secret")
+    client.auth.approle.login.assert_called_once_with(
+        role_id="api-role", secret_id="api-secret"
+    )
 
 
 def test_root_token_cannot_replace_service_identity(monkeypatch):

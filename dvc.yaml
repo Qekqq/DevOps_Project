@@ -11,6 +11,7 @@ stages:
       - src/feedback_dataset.py
       - src/data_preprocessing.py
       - src/pipelines.py
+      - src/clinical_features_v1.py
       - src/train.py
       - src/logger.py
     params:
