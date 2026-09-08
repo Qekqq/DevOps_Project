@@ -10,7 +10,6 @@ from src.schemas import DiabetesInput
 
 from src.db.models import (
     ModelVersion,
-    Patient,
     PredictionFeedback,
     PredictionHistory,
     Study,
@@ -41,7 +40,7 @@ def get_study(db: Session, patient_code: str, study_date: date) -> Study | None:
     )).scalar_one_or_none()
 
 
-def get_or_create_study(db: Session, patient_code: str, study_date: date, features: dict) -> Study:
+def get_or_create_study(db: Session, patient_code: str, study_date: date, features: dict, created_by=None) -> Study:
     """Вызывать под транзакционной блокировкой пациента; commit делает вызывающий код."""
     validated = DiabetesInput(patient_code=patient_code, study_date=study_date, **features)
     patient_code = validated.patient_code
@@ -51,7 +50,7 @@ def get_or_create_study(db: Session, patient_code: str, study_date: date, featur
         require_same_features(study.features, features)
         return study
     study = Study(patient_code=patient_code.strip().upper(), study_date=study_date,
-                  features={key: features[key] for key in FEATURE_COLUMNS})
+                  features={key: features[key] for key in FEATURE_COLUMNS}, created_by=created_by)
     db.add(study)
     db.flush()
     return study
@@ -70,14 +69,12 @@ def get_prediction_for_study(
     if study is None:
         return None
     require_same_features(study.features, features)
-    record = db.execute(select(PredictionHistory).where(
+    record = db.execute(select(PredictionHistory).join(ModelVersion).where(
         PredictionHistory.study_id == study.id,
-        PredictionHistory.model_version_snapshot == model_version,
+        ModelVersion.model_version == model_version,
     )).scalar_one_or_none()
     if record is None:
         return None
-    if record.inference_payload is not None:
-        return dict(record.inference_payload["result"])
     return {
         "prediction": record.prediction,
         "probability": float(record.probability) if record.probability is not None else None,
@@ -120,43 +117,6 @@ def require_model_version(db: Session, version: str) -> ModelVersion:
     return model
 
 
-def get_patient_by_code(db: Session, patient_code: str) -> Patient | None:
-    """
-    Ищет пациента по коду.
-    """
-    normalized_code = patient_code.strip()
-
-    statement = select(Patient).where(Patient.patient_code == normalized_code)
-    return db.execute(statement).scalar_one_or_none()
-
-
-def get_or_create_patient(db: Session, patient_code: str | None) -> Patient | None:
-    """
-    Возвращает существующего пациента или создаёт нового.
-
-    Если patient_code не передан, возвращает None.
-    Это допустимо, потому что prediction_history.patient_id может быть NULL.
-    """
-    if patient_code is None:
-        return None
-
-    normalized_code = patient_code.strip()
-
-    if not normalized_code:
-        return None
-
-    patient = get_patient_by_code(db, normalized_code)
-
-    if patient is not None:
-        return patient
-
-    patient = Patient(patient_code=normalized_code)
-    db.add(patient)
-    db.flush()
-
-    return patient
-
-
 def save_prediction_history(
     db: Session,
     *,
@@ -192,7 +152,7 @@ def save_prediction_history(
     features = validated.model_dump(exclude={"patient_code", "study_date"})
 
     # Блокировка до конца транзакции: параллельные сообщения одного
-    # пациента проверяются последовательно, включая создание patients.
+    # пациента проверяются последовательно, включая создание исследования.
     db.execute(
         text("SELECT pg_advisory_xact_lock(hashtextextended(:patient_code, 0))"),
         {"patient_code": patient_code},
@@ -204,36 +164,13 @@ def save_prediction_history(
     if saved_result is not None:
         raise DuplicatePredictionError("Это исследование уже сохранено для данной версии модели")
 
-    patient = get_or_create_patient(db, patient_code)
-    study = get_or_create_study(db, patient_code, study_date, features)
-
-    label = "detected" if int(prediction) == 1 else "not_detected"
+    study = get_or_create_study(db, patient_code, study_date, features, created_by=user_id)
 
     prediction_history = PredictionHistory(
-        study_id=study.id,
-        user_id=user_id,
-        patient_id=patient.id if patient is not None else None,
-        model_version_id=model_version.id,
-        patient_code_snapshot=patient_code,
-        model_version_snapshot=model_version.model_version,
-        study_date=study_date,
-        inference_payload={
-            "features": {key: features[key] for key in FEATURE_COLUMNS},
-            "result": {"prediction": int(prediction), "probability": probability, "label": label},
-        },
-        pregnancies=features["pregnancies"],
-        glucose=features["glucose"],
-        blood_pressure=features["blood_pressure"],
-        skin_thickness=features["skin_thickness"],
-        insulin=features["insulin"],
-        bmi=features["bmi"],
-        diabetes_pedigree_function=features["diabetes_pedigree_function"],
-        age=features["age"],
-        prediction=int(prediction),
-        probability=probability,
-        label=label,
-        request_source=request_source,
-        response_time_ms=response_time_ms,
+        study_id=study.id, model_version_id=model_version.id,
+        prediction=int(prediction), probability=probability,
+        role_at_prediction=model_version.role,
+        request_source=request_source, response_time_ms=response_time_ms,
     )
 
     db.add(prediction_history)
@@ -264,7 +201,7 @@ def save_prediction_feedback(
 ) -> PredictionFeedback:
     """
     Создаёт или обновляет общую фактическую метку исследования.
-    Все версии моделей используют её через prediction_history.study_id.
+    Все версии моделей используют её через predictions.study_id.
     """
     if type(true_label) is not int or true_label not in (0, 1):
         raise ValueError("true_label must be 0 or 1")

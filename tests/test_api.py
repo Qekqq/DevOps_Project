@@ -335,6 +335,7 @@ def test_predict_returns_saved_result_without_prediction_or_publication(
         SimpleNamespace(id=19, features={k: v for k, v in VALID_INPUT.items() if k not in {"patient_code", "study_date"}}),
         SimpleNamespace(
             model_version_snapshot=TEST_PREDICTOR.model_version,
+            **saved_result,
             inference_payload={
                 "features": {k: v for k, v in VALID_INPUT.items() if k not in {"patient_code", "study_date"}},
                 "result": saved_result,

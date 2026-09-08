@@ -19,22 +19,19 @@ def test_existing_prediction_is_not_overwritten_or_duplicated(monkeypatch):
     db.execute.return_value.scalar_one_or_none.return_value = None
     db.execute.return_value.scalar_one_or_none.side_effect = [
         SimpleNamespace(id=19, features=FEATURES),
-        SimpleNamespace(model_version_snapshot="v1", inference_payload={
+        SimpleNamespace(prediction=1, probability=0.81, label="detected", model_version_snapshot="v1", inference_payload={
             "features": FEATURES,
             "result": {"prediction": 1, "probability": 0.81, "label": "detected"},
         })
     ]
-    create_patient = Mock()
-    monkeypatch.setattr(repositories, "get_or_create_patient", create_patient)
 
     with pytest.raises(repositories.DuplicatePredictionError):
         repositories.save_prediction_history(
             db, features=FEATURES, prediction=1, probability=0.81,
-            model_version=SimpleNamespace(id=1, model_version="v1"),
+            model_version=SimpleNamespace(id=1, model_version="v1", role="champion"),
             patient_code="pat001", study_date=date(2026, 9, 8),
         )
 
-    create_patient.assert_not_called()
     db.add.assert_not_called()
     db.flush.assert_not_called()
 
@@ -43,23 +40,17 @@ def test_new_prediction_keeps_normalized_patient_code(monkeypatch):
     db = Mock()
     db.execute.return_value.scalar_one_or_none.return_value = None
     db.execute.return_value.scalars.return_value.all.return_value = []
-    create_patient = Mock(return_value=SimpleNamespace(id=7, patient_code="PAT001"))
-    monkeypatch.setattr(repositories, "get_or_create_patient", create_patient)
     monkeypatch.setattr(repositories, "get_or_create_study", Mock(return_value=SimpleNamespace(id=19)))
 
     result = repositories.save_prediction_history(
         db, features=FEATURES, prediction=1, probability=0.81,
-        model_version=SimpleNamespace(id=1, model_version="v1"),
+        model_version=SimpleNamespace(id=1, model_version="v1", role="champion"),
         patient_code=" pat001 ", study_date=date(2026, 9, 8),
     )
 
-    create_patient.assert_called_once_with(db, "PAT001")
-    assert result.patient_code_snapshot == "PAT001"
-    assert result.patient_id == 7
     assert result.study_id == 19
-    assert result.study_date == date(2026, 9, 8)
-    assert result.inference_payload["features"] == FEATURES
-    assert result.inference_payload["result"]["probability"] == 0.81
+    assert result.probability == 0.81
+    assert result.role_at_prediction == "champion"
     db.add.assert_called_once_with(result)
     db.commit.assert_not_called()
 
@@ -70,7 +61,7 @@ def test_invalid_patient_code_cannot_be_saved(code):
     with pytest.raises(ValueError):
         repositories.save_prediction_history(
             db, features=FEATURES, prediction=1, probability=0.81,
-            model_version=SimpleNamespace(id=1, model_version="v1"),
+            model_version=SimpleNamespace(id=1, model_version="v1", role="champion"),
             patient_code=code, study_date=date(2026, 9, 8),
         )
     db.execute.assert_not_called()
@@ -153,7 +144,7 @@ def test_invalid_measurement_cannot_be_saved_from_consumer():
     with pytest.raises(ValueError):
         repositories.save_prediction_history(
             db, features={**FEATURES, "glucose": -1}, prediction=1, probability=0.81,
-            model_version=SimpleNamespace(id=1, model_version="v1"),
+            model_version=SimpleNamespace(id=1, model_version="v1", role="champion"),
             patient_code="PAT001", study_date=date(2026, 9, 8),
         )
     db.execute.assert_not_called()

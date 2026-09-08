@@ -14,7 +14,7 @@ from src.datasets import read_raw_dataset
 
 
 def read_confirmed_studies(db, *, date_from=None, date_to=None):
-    # Не соединяем с prediction_history: число моделей не влияет на число строк.
+    # Не соединяем с predictions: число моделей не влияет на число строк.
     if date_from is not None and date_to is not None and date_from > date_to:
         raise ValueError("Начало периода не может быть позже окончания")
     query = (
@@ -76,7 +76,7 @@ def save_snapshot(frame, directory, *, date_from=None, date_to=None):
         "rows": len(frame),
         "patients": int(frame["patient_code"].nunique()),
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "source": "studies JOIN prediction_feedback",
+        "source": "studies JOIN feedback",
         "target": "outcome",
         "filters": filters,
     }

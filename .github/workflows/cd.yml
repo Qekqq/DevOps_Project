@@ -1,356 +1,82 @@
 name: CD
 
 on:
-  workflow_run:
-    workflows:
-      - CI
-    types:
-      - completed
-
-  workflow_dispatch:
-
-env:
-  IMAGE_NAME: qekqq/devops_hw_4_api
-  IMAGE_TAG: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || 'latest' }}
+  workflow_call:
+    inputs:
+      image_tag:
+        required: true
+        type: string
 
 jobs:
   compose-functional-tests:
-    name: Run docker-compose functional tests with Vault and Kafka
     runs-on: ubuntu-latest
-
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push') }}
-
+    permissions:
+      contents: read
+      packages: read
+    env:
+      IMAGE_TAG: ${{ inputs.image_tag }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
         with:
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
-
-      - name: Log in to DockerHub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Validate required secrets
-        env:
-          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
-          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
-          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
-          VAULT_TOKEN: ${{ secrets.VAULT_TOKEN }}
-        run: |
-          test -n "$POSTGRES_DB"
-          test -n "$POSTGRES_USER"
-          test -n "$POSTGRES_PASSWORD"
-          test -n "$VAULT_TOKEN"
-
-      - name: Pull Docker image
-        run: |
-          echo "Pulling image: $IMAGE_NAME:$IMAGE_TAG"
-
-          for i in {1..30}; do
-            if docker pull "$IMAGE_NAME:$IMAGE_TAG"; then
-              echo "Image pulled successfully"
-              exit 0
-            fi
-
-            echo "Image is not available yet. Waiting..."
-            sleep 10
-          done
-
-          echo "Failed to pull image: $IMAGE_NAME:$IMAGE_TAG"
-          exit 1
-
-      - name: Create environment file
-        env:
-          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
-          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
-          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
-          VAULT_TOKEN: ${{ secrets.VAULT_TOKEN }}
-        run: |
-          cat > .env <<EOF
-          POSTGRES_HOST=db
-          POSTGRES_PORT=5432
-          POSTGRES_DB=$POSTGRES_DB
-          POSTGRES_USER=$POSTGRES_USER
-          POSTGRES_PASSWORD=$POSTGRES_PASSWORD
-
-          VAULT_ADDR=http://vault:8200
-          VAULT_TOKEN=$VAULT_TOKEN
-          VAULT_KV_MOUNT=secret
-          VAULT_DB_SECRET_PATH=database/postgres
-          VAULT_KAFKA_SECRET_PATH=kafka/config
-
-          KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-          KAFKA_PREDICTION_TOPIC=prediction-results
-          KAFKA_CONSUMER_GROUP=prediction-results-consumer
-          EOF
-
-      - name: Create CD docker-compose file
-        run: |
-          cat > docker-compose.cd.yml <<'EOF'
-          services:
-            diabetes-api:
-              image: ${IMAGE_NAME}:${IMAGE_TAG}
-              container_name: devops_hw_4_api
-              env_file:
-                - .env
-              environment:
-                PYTHONUNBUFFERED: "1"
-                VAULT_ADDR: http://vault:8200
-                VAULT_KV_MOUNT: secret
-                VAULT_DB_SECRET_PATH: database/postgres
-                VAULT_KAFKA_SECRET_PATH: kafka/config
-              ports:
-                - "8000:8000"
-              depends_on:
-                db:
-                  condition: service_healthy
-                vault:
-                  condition: service_healthy
-                vault-init:
-                  condition: service_completed_successfully
-                kafka:
-                  condition: service_healthy
-
-            kafka-consumer:
-              image: ${IMAGE_NAME}:${IMAGE_TAG}
-              container_name: devops_hw_4_kafka_consumer
-              command: python -m src.kafka.consumer
-              env_file:
-                - .env
-              environment:
-                PYTHONUNBUFFERED: "1"
-                VAULT_ADDR: http://vault:8200
-                VAULT_KV_MOUNT: secret
-                VAULT_DB_SECRET_PATH: database/postgres
-                VAULT_KAFKA_SECRET_PATH: kafka/config
-              depends_on:
-                db:
-                  condition: service_healthy
-                vault:
-                  condition: service_healthy
-                vault-init:
-                  condition: service_completed_successfully
-                kafka:
-                  condition: service_healthy
-
-            db:
-              image: postgres:16
-              container_name: devops_hw_4_db
-              env_file:
-                - .env
-              ports:
-                - "5432:5432"
-              volumes:
-                - ./db:/docker-entrypoint-initdb.d:ro
-              healthcheck:
-                test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-                interval: 5s
-                timeout: 5s
-                retries: 10
-
-            vault:
-              image: hashicorp/vault:1.17
-              container_name: devops_hw_4_vault
-              cap_add:
-                - IPC_LOCK
-              env_file:
-                - .env
-              environment:
-                VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_TOKEN}
-                VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
-              ports:
-                - "8200:8200"
-              command: server -dev
-              healthcheck:
-                test: ["CMD-SHELL", "VAULT_ADDR=http://127.0.0.1:8200 vault status >/dev/null 2>&1"]
-                interval: 5s
-                timeout: 5s
-                retries: 20
-
-            vault-init:
-              image: hashicorp/vault:1.17
-              container_name: devops_hw_4_vault_init
-              env_file:
-                - .env
-              environment:
-                VAULT_ADDR: http://vault:8200
-                VAULT_KV_MOUNT: secret
-                VAULT_DB_SECRET_PATH: database/postgres
-                VAULT_KAFKA_SECRET_PATH: kafka/config
-              volumes:
-                - ./vault/init-vault.sh:/vault/init-vault.sh:ro
-              entrypoint: ["/bin/sh", "/vault/init-vault.sh"]
-              depends_on:
-                vault:
-                  condition: service_healthy
-              restart: "no"
-
-            kafka:
-              image: bitnamilegacy/kafka:3.7
-              container_name: devops_hw_4_kafka
-              environment:
-                KAFKA_CFG_NODE_ID: 1
-                KAFKA_CFG_PROCESS_ROLES: broker,controller
-                KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
-                KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
-                KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-                KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
-                KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
-                KAFKA_CFG_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-                KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
-                ALLOW_PLAINTEXT_LISTENER: "yes"
-              healthcheck:
-                test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
-                interval: 10s
-                timeout: 10s
-                retries: 20
-          EOF
-
-      - name: Start services with docker-compose
-        run: |
-          docker compose -f docker-compose.cd.yml up -d
-
-      - name: Show Vault init logs
-        run: |
-          docker compose -f docker-compose.cd.yml logs vault-init
-
-      - name: Wait for API startup
-        run: |
-          for i in {1..30}; do
-            if python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"; then
-              echo "API is ready"
-              exit 0
-            fi
-
-            echo "Waiting for API..."
-            sleep 2
-          done
-
-          docker logs devops_hw_4_api
-          exit 1
-
-      - name: Run API, Vault and Kafka functional tests
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create isolated test configuration
         run: |
           python - <<'PY'
-          import json
-          import urllib.request
-
-          def get_json(url: str) -> dict:
-              response = urllib.request.urlopen(url, timeout=5)
-              assert response.status == 200
-              return json.loads(response.read().decode("utf-8"))
-
-          health_data = get_json("http://127.0.0.1:8000/health")
-          assert health_data["status"] == "ok"
-          assert health_data["service"] == "diabetes-prediction-api"
-
-          db_health_data = get_json("http://127.0.0.1:8000/db/health")
-          assert db_health_data["status"] == "ok"
-          assert db_health_data["database"] == "connected"
-
-          payload = {
-              "patient_code": "TST001",
-              "study_date": "2026-09-08",
-              "pregnancies": 6,
-              "glucose": 148,
-              "blood_pressure": 72,
-              "skin_thickness": 35,
-              "insulin": 0,
-              "bmi": 33.6,
-              "diabetes_pedigree_function": 0.627,
-              "age": 50,
-          }
-
-          request = urllib.request.Request(
-              "http://127.0.0.1:8000/predict",
-              data=json.dumps(payload).encode("utf-8"),
-              headers={"Content-Type": "application/json"},
-              method="POST",
+          import secrets
+          from pathlib import Path
+          password = secrets.token_hex(24)
+          token = secrets.token_hex(24)
+          print(f"::add-mask::{password}")
+          print(f"::add-mask::{token}")
+          Path('.env').write_text(
+              'POSTGRES_HOST=db\nPOSTGRES_PORT=5432\nPOSTGRES_DB=diabetes_ci\n'
+              'POSTGRES_USER=diabetes_ci\n'
+              f'POSTGRES_PASSWORD={password}\nVAULT_TOKEN={token}\n'
+              'KAFKA_BOOTSTRAP_SERVERS=kafka:9092\n'
+              'KAFKA_PREDICTION_TOPIC=prediction-results\n'
+              'KAFKA_CONSUMER_GROUP=prediction-results-consumer\n'
           )
-
-          predict_response = urllib.request.urlopen(request, timeout=5)
-          assert predict_response.status == 200
-
-          predict_data = json.loads(predict_response.read().decode("utf-8"))
-
-          assert predict_data["prediction"] in [0, 1]
-          assert predict_data["label"] in ["detected", "not_detected"]
-
-          if predict_data["probability"] is not None:
-              assert 0 <= predict_data["probability"] <= 1
-
-          print("Functional API tests passed")
-          print(predict_data)
           PY
-
-      - name: Wait for consumer to save prediction into database
-        env:
-          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
-          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+          cat > docker-compose.override.yml <<'YAML'
+          services:
+            diabetes-api:
+              image: ghcr.io/qekqq/devops_project:${IMAGE_TAG}
+            kafka-consumer:
+              image: ghcr.io/qekqq/devops_project:${IMAGE_TAG}
+          YAML
+      - name: Pull exact tested image
+        run: docker compose pull diabetes-api kafka-consumer
+      - name: Start infrastructure
+        run: docker compose up -d db vault vault-init kafka
+      - name: Register models and activate release
         run: |
-          PREDICTION_ROWS=0
-
+          docker compose run --rm diabetes-api python -m src.register_release models/current.json --apply
+          docker compose run --rm diabetes-api python -m scripts.activate_model_release models/current.json
+      - name: Start application
+        run: docker compose up -d --no-build diabetes-api kafka-consumer
+      - name: Wait for API
+        run: |
           for i in {1..30}; do
-            PREDICTION_ROWS=$(docker compose -f docker-compose.cd.yml exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT COUNT(*) FROM prediction_history;" | tr -d '[:space:]')
-            echo "prediction_history rows: $PREDICTION_ROWS (attempt $i)"
-
-            if [ "$PREDICTION_ROWS" -gt 0 ]; then
-              echo "Consumer saved prediction into database"
-              exit 0
-            fi
-
+            if curl --fail --silent http://127.0.0.1:8001/db/health; then exit 0; fi
             sleep 2
           done
-
-          echo "Consumer did not save prediction into database"
-          docker compose -f docker-compose.cd.yml logs kafka-consumer
           exit 1
-
-      - name: Load raw dataset into PostgreSQL
+      - name: Verify API Kafka and both models
+        run: docker compose exec -T diabetes-api python -m scripts.check_prediction_flow
+      - name: Verify database constraints and audit
+        run: docker compose exec -T diabetes-api python -m scripts.check_database_contract
+      - name: Verify raw dataset import is idempotent
         run: |
-          docker compose -f docker-compose.cd.yml exec -T diabetes-api python -m src.db.load_dataset
-
-      - name: Check database records
-        env:
-          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
-          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+          docker compose exec -T diabetes-api python -m src.db.load_dataset
+          docker compose exec -T db sh -c 'test "$(psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT count(*) FROM dataset_rows")" = 768'
+      - name: Service diagnostics
+        if: failure()
         run: |
-          PREDICTION_ROWS=$(docker compose -f docker-compose.cd.yml exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT COUNT(*) FROM prediction_history;" | tr -d '[:space:]')
-          DATASET_ROWS=$(docker compose -f docker-compose.cd.yml exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT COUNT(*) FROM raw_dataset_samples;" | tr -d '[:space:]')
-
-          echo "prediction_history rows: $PREDICTION_ROWS"
-          echo "raw_dataset_samples rows: $DATASET_ROWS"
-
-          test "$PREDICTION_ROWS" -gt 0
-          test "$DATASET_ROWS" -gt 0
-
-          docker compose -f docker-compose.cd.yml exec -T db \
-            psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
-            -c "SELECT dataset_id, COUNT(*) AS rows_count FROM raw_dataset_samples GROUP BY dataset_id ORDER BY dataset_id;"
-
-      - name: Show consumer logs
+          docker compose ps -a
+          docker compose logs --tail=100 diabetes-api kafka-consumer
+      - name: Remove disposable test environment
         if: always()
-        run: |
-          docker compose -f docker-compose.cd.yml logs kafka-consumer || true
-
-      - name: Show service status
-        if: always()
-        run: |
-          docker compose -f docker-compose.cd.yml ps || true
-
-      - name: Show API logs
-        if: always()
-        run: |
-          docker logs devops_hw_4_api || true
-
-      - name: Show Vault logs
-        if: always()
-        run: |
-          docker logs devops_hw_4_vault || true
-
-      - name: Stop services
-        if: always()
-        run: |
-          docker compose -f docker-compose.cd.yml down -v || true
+        run: docker compose down -v

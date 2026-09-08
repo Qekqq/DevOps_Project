@@ -1,0 +1,9 @@
+# Изолированный локальный стенд: запускать с -p devops_verify.
+services:
+  diabetes-api:
+    ports: !reset []
+    volumes: !reset []
+  db:
+    ports: !reset []
+  vault:
+    ports: !reset []

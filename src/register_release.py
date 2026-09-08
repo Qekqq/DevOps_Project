@@ -4,11 +4,11 @@ from hashlib import sha256
 import json
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from src.config import get_project_root
 from src.db.database import get_session_factory
-from src.db.models import ModelVersion
+from src.db.models import ModelVersion, TrainingRun
 from src.model_registry import ModelRegistry
 from src.db.load_raw_dataset import import_raw_dataset
 from src.feedback_dataset import load_snapshot
@@ -49,6 +49,23 @@ def validate_release(path):
 
 def register_release(manifest, db, *, dataset_id=None):
     """Регистрирует challenger; существующие роли и артефакты не перезаписывает."""
+    if dataset_id is None:
+        raise ValueError("A registered dataset is required")
+    db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+               {"key": "release:" + manifest["release"]})
+    run = db.execute(select(TrainingRun).where(
+        TrainingRun.release_id == manifest["release"]
+    )).scalar_one_or_none()
+    configuration = {"dataset": manifest["dataset"], "models": manifest["models"],
+                     "champion_version": manifest["champion_version"]}
+    if run is None:
+        run = TrainingRun(release_id=manifest["release"], dataset_id=dataset_id,
+                          configuration=configuration, provenance=manifest["provenance"])
+        db.add(run)
+        db.flush()
+    elif (run.dataset_id != dataset_id or run.configuration != configuration
+          or run.provenance != manifest["provenance"]):
+        raise ValueError("Release already registered with different metadata")
     for record in manifest["models"]:
         existing = db.execute(select(ModelVersion).where(ModelVersion.model_version == record["version"])).scalar_one_or_none()
         if existing is not None:
@@ -59,12 +76,14 @@ def register_release(manifest, db, *, dataset_id=None):
         db.add(ModelVersion(
             model_name=record["name"], model_version=record["version"],
             artifact_path=record["artifact_path"], artifact_sha256=record["artifact_sha256"],
-            artifact_format=record["format"], preprocessing_version=record["format"],
-            train_medians=None, params_json=record["parameters"],
-            accuracy_score=metrics["accuracy"], precision_score=metrics["precision"],
-            recall_score=metrics["recall"], f1_score=metrics["f1"],
-            traffic_weight=0, role="challenger",
-            trained_on_dataset_id=dataset_id,
+            artifact_format=record["format"], family=record["parameters"]["family"],
+            training_run_id=run.id,
+            params_json={
+                "configuration": record["parameters"],
+                "search_result": record.get("search_result"),
+            },
+            metrics={"validation": metrics, "test": record.get("test"),
+                     "search": record.get("search_result")}, role="challenger",
             metadata_json={"release": manifest["release"], "dataset": manifest["dataset"],
                 "provenance": manifest["provenance"], "test": record.get("test"),
                 "recommended_champion": record["version"] == manifest["champion_version"]},

@@ -1,6 +1,8 @@
 """Загрузка неизменяемой raw-версии: повторная загрузка не создаёт дубли."""
 import argparse
 from pathlib import Path
+from hashlib import sha256
+import json
 
 from sqlalchemy import select, text
 
@@ -13,17 +15,28 @@ from src.db.models import Dataset, RawDatasetSample
 def import_raw_dataset(db, path, name="pima_diabetes"):
     frame, audit = read_raw_dataset(Path(path))
     digest = audit["sha256"]
+    snapshot = None
+    source = None
+    version = "raw-" + digest[:24]
+    if (Path(path).parent / "dataset.json").exists():
+        from src.feedback_dataset import load_snapshot
+        source, snapshot = load_snapshot(path)
+        version = sha256(json.dumps(snapshot, sort_keys=True).encode()).hexdigest()
     db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"), {"key": "dataset:" + digest})
-    existing = db.execute(select(Dataset).where(Dataset.source_sha256 == digest)).scalar_one_or_none()
+    existing = db.execute(select(Dataset).where(Dataset.dataset_version == version)).scalar_one_or_none()
     if existing is not None:
         if existing.row_count != len(frame):
             raise ValueError("Количество строк зарегистрированного датасета не совпадает")
         return existing
-    dataset = Dataset(dataset_name=name, dataset_version="raw-" + digest[:24],
-                      source_path=Path(path).as_posix(), source_sha256=digest, row_count=len(frame))
+    dataset = Dataset(dataset_name=name, dataset_version=version,
+                      source_path=Path(path).as_posix(), source_sha256=digest, row_count=len(frame),
+                      source_type="feedback" if snapshot else "raw",
+                      selection_filters=snapshot.get("filters", {}) if snapshot else {},
+                      lineage_sha256=snapshot["lineage_sha256"] if snapshot else None)
     db.add(dataset)
     db.flush()
-    db.add_all([RawDatasetSample(dataset_id=dataset.id, row_number=number, sample_values=values)
+    db.add_all([RawDatasetSample(dataset_id=dataset.id, row_number=number, sample_values=values,
+                                source_study_id=int(source.iloc[number]["study_id"]) if source is not None else None)
                 for number, values in enumerate(frame.to_dict(orient="records"))])
     db.flush()
     return dataset

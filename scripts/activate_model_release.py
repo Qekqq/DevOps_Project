@@ -27,13 +27,11 @@ def main():
                 raise ValueError("Путь или формат зарегистрированного артефакта отличается")
         for record in records:
             record.role = "archived"
-            record.traffic_weight = 0
         db.flush()
         for version in versions:
             registered[version].role = "challenger"
         champion = registered[manifest["champion_version"]]
         champion.role = "champion"
-        champion.traffic_weight = 100
         db.commit()
     print("Выпуск активирован; предыдущие версии сохранены в архиве.")
 

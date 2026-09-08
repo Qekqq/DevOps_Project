@@ -48,7 +48,7 @@ def main():
                 Study.patient_code == payload["patient_code"],
                 Study.study_date == date.fromisoformat(payload["study_date"]),
             )).all()
-            if {row.model_version_snapshot for row in records} == expected:
+            if {row.model_version.model_version for row in records} == expected:
                 assert len(records) == 2
                 break
         if time.monotonic() >= deadline:

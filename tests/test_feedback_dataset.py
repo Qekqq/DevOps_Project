@@ -17,21 +17,22 @@ def test_snapshot_date_filter_includes_boundaries_and_negative_feedback(tmp_path
     with engine.begin() as connection:
         connection.execute(text(
             "CREATE TABLE studies (id INTEGER PRIMARY KEY, patient_code TEXT, "
-            "study_date DATE, features JSON, created_at DATETIME)"
+            "study_date DATE, created_by INTEGER, created_at DATETIME, "
+            + ", ".join(f"{name} NUMERIC" for name in FEATURE_COLUMNS) + ")"
         ))
         connection.execute(text(
-            "CREATE TABLE prediction_feedback (study_id INTEGER, true_label INTEGER)"
+            "CREATE TABLE feedback (study_id INTEGER, true_label INTEGER)"
         ))
         for number in range(1, 6):
             connection.execute(text(
-                "INSERT INTO studies VALUES (:id, 'PAT001', :day, :features, NULL)"
+                "INSERT INTO studies VALUES (:id, 'PAT001', :day, NULL, NULL, 1,1,1,1,1,1,1,1)"
             ), {
                 "id": number, "day": f"2026-09-0{number}",
                 "features": json.dumps({key: 1 for key in FEATURE_COLUMNS}),
             })
         for number, label in [(1, 1), (2, 0), (4, 1), (5, 0)]:
             connection.execute(text(
-                "INSERT INTO prediction_feedback VALUES (:id, :label)"
+                "INSERT INTO feedback VALUES (:id, :label)"
             ), {"id": number, "label": label})
     with Session(engine) as db:
         frame = read_confirmed_studies(

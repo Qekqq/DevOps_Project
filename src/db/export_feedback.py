@@ -5,6 +5,7 @@ from datetime import date
 from src.config import get_project_root
 from src.db.database import get_session_factory
 from src.feedback_dataset import read_confirmed_studies, save_snapshot
+from src.db.load_raw_dataset import import_raw_dataset
 
 
 def run(*, date_from=None, date_to=None):
@@ -14,6 +15,9 @@ def run(*, date_from=None, date_to=None):
         frame, get_project_root() / "data" / "feedback",
         date_from=date_from, date_to=date_to,
     )
+    with get_session_factory()() as db:
+        import_raw_dataset(db, path, name="confirmed_studies")
+        db.commit()
     print(f"Снимок подтверждённых исследований сохранён: {path}")
 
 
