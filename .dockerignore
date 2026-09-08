@@ -10,6 +10,7 @@ env/
 .github/
 .dvc/
 .local-history/
+backups/
 .codex/
 .agents/
 data/feedback/

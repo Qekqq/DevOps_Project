@@ -34,3 +34,4 @@ logs/
 *.log
 /models
 /.local-history/
+/backups/
