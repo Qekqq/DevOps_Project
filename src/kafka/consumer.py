@@ -1,7 +1,8 @@
 import json
+import logging
 import re
 import time
-from datetime import date
+from datetime import date, datetime, timezone
 
 from kafka.errors import NoBrokersAvailable
 from kafka.structs import OffsetAndMetadata
@@ -10,14 +11,23 @@ from kafka import KafkaConsumer, TopicPartition
 from src.db.database import get_session_factory
 from src.db.repositories import (
     DuplicatePredictionError,
+    StudyConflictError,
     require_model_version,
     save_prediction_history,
 )
 from src.kafka.shadow import predict_challengers
 from src.logger import get_logger
 from src.secrets.vault_client import get_kafka_secrets
+from src.telemetry import CONSUMER_CONNECTED, DELIVERY, event, request_id, start_metrics
 
 logger = get_logger(__name__)
+
+
+def consumer_connected(consumer):
+    # В kafka-python 2.0.2 bootstrap_connected() проверяет только начальное
+    # соединение, которое закрывается после получения metadata. Проверяем
+    # рабочие соединения клиента; публичного аналога у этой версии нет.
+    return any(conn.connected() for conn in list(consumer._client._conns.values()))
 
 
 def save_message_to_database(message: dict) -> None:
@@ -45,7 +55,6 @@ def save_message_to_database(message: dict) -> None:
             model_version=model_version,
             study_date=study_date,
             patient_code=message.get("patient_code"),
-            request_source=message.get("request_source", "api"),
             response_time_ms=message.get("response_time_ms"),
             # В старых сообщениях поле отсутствует: producer публиковал champion.
             role_at_prediction=message.get("role_at_prediction", "champion"),
@@ -73,6 +82,7 @@ def create_consumer() -> KafkaConsumer:
             )
 
             logger.info("Kafka consumer подключён.")
+            CONSUMER_CONNECTED.set_function(lambda: consumer_connected(consumer))
             return consumer
 
         except NoBrokersAvailable:
@@ -92,14 +102,21 @@ def run() -> None:
     try:
         for record in consumer:
             message = record.value
+            correlation = message.get("request_id", "")
+            request_id.set(
+                correlation if re.fullmatch(r"[a-f0-9]{32}", correlation) else ""
+            )
             try:
                 save_message_to_database(message)
             except DuplicatePredictionError:
+                event("duplicate_message_skipped")
+                predict_challengers(message)
+            except StudyConflictError:
                 logger.info(
-                    "Повторный прогноз пропущен (patient=%s).",
-                    message.get("patient_code"),
+                    "Пропущено сообщение с показателями до исправления исследования"
                 )
-            predict_challengers(message)
+            else:
+                predict_challengers(message)
             # Любая другая ошибка прерывает обработку без подтверждения offset.
             # После перезапуска сообщение будет прочитано снова.
             consumer.commit(
@@ -109,9 +126,22 @@ def run() -> None:
                     )
                 }
             )
+            event("prediction_processing_completed")
+            try:
+                published = datetime.fromisoformat(message.get("created_at", ""))
+                DELIVERY.observe(
+                    max(0, (datetime.now(timezone.utc) - published).total_seconds())
+                )
+            except (ValueError, TypeError):
+                pass  # Старые сообщения могли не содержать время публикации.
+            request_id.set("")
+    except Exception as error:
+        event("consumer_failed", level=logging.ERROR, error_type=type(error).__name__)
+        raise
     finally:
         consumer.close()
 
 
 if __name__ == "__main__":
+    start_metrics()
     run()

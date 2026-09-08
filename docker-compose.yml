@@ -1,12 +1,26 @@
 name: devops_project
 
 services:
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "127.0.0.1:8080:80"
+    depends_on:
+      diabetes-api:
+        condition: service_started
+    restart: unless-stopped
+
   diabetes-api:
     build:
       context: .
       dockerfile: Dockerfile
     environment:
       PYTHONUNBUFFERED: "1"
+      APP_SERVICE: api
+      METRICS_PORT: "9101"
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-}
       VAULT_ADDR: http://vault:8200
       VAULT_ROLE_ID: ${API_VAULT_ROLE_ID:-}
       VAULT_SECRET_ID: ${API_VAULT_SECRET_ID:-}
@@ -17,6 +31,7 @@ services:
       - "127.0.0.1:8001:8000"
     volumes:
       - ./data/feedback:/app/data/feedback
+      - application_logs:/app/logs
     depends_on:
       db:
         condition: service_healthy
@@ -32,6 +47,8 @@ services:
       dockerfile: Dockerfile
     environment:
       PYTHONUNBUFFERED: "1"
+      APP_SERVICE: consumer
+      METRICS_PORT: "9101"
       VAULT_ADDR: http://vault:8200
       VAULT_ROLE_ID: ${CONSUMER_VAULT_ROLE_ID:-}
       VAULT_SECRET_ID: ${CONSUMER_VAULT_SECRET_ID:-}
@@ -39,6 +56,8 @@ services:
       VAULT_DB_SECRET_PATH: database/postgres
       VAULT_KAFKA_SECRET_PATH: kafka/config
     command: python -m src.kafka.consumer
+    volumes:
+      - application_logs:/app/logs
     depends_on:
       db:
         condition: service_healthy
@@ -46,6 +65,109 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+    restart: unless-stopped
+
+  metrics-exporter:
+    build:
+      context: .
+    command: python -m src.metrics_exporter
+    environment:
+      APP_SERVICE: exporter
+      VAULT_ADDR: http://vault:8200
+      VAULT_ROLE_ID: ${API_VAULT_ROLE_ID:-}
+      VAULT_SECRET_ID: ${API_VAULT_SECRET_ID:-}
+      VAULT_DB_SECRET_PATH: database/postgres
+    volumes:
+      - application_logs:/app/logs
+    depends_on:
+      db:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+    mem_limit: 256m
+    cpus: 0.5
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.13.3
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=30d
+      - --storage.tsdb.retention.size=1GB
+      - --web.enable-remote-write-receiver
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      - metrics-exporter
+    mem_limit: 384m
+    cpus: 0.5
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.2.1
+    environment:
+      GF_SERVER_ROOT_URL: ${PUBLIC_ORIGIN:-http://localhost:8080}/grafana/
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_AUTH_PROXY_ENABLED: "true"
+      GF_AUTH_PROXY_HEADER_NAME: X-WEBAUTH-USER
+      GF_AUTH_PROXY_HEADER_PROPERTY: username
+      GF_AUTH_PROXY_AUTO_SIGN_UP: "true"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_AUTH_BASIC_ENABLED: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_AUTH_DISABLE_SIGNOUT_MENU: "true"
+      GF_USERS_AUTO_ASSIGN_ORG_ROLE: Editor
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SECURITY_DISABLE_INITIAL_ADMIN_CREATION: "true"
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+      - loki
+    mem_limit: 512m
+    cpus: 1.0
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:3.7.7
+    command: -config.file=/etc/loki/config.yml
+    volumes:
+      - ./monitoring/loki/config.yml:/etc/loki/config.yml:ro
+      - loki_data:/loki
+    mem_limit: 384m
+    cpus: 0.5
+    restart: unless-stopped
+
+  alloy:
+    image: grafana/alloy:v1.19.2
+    # cAdvisor читает cgroup контейнеров на Linux-хосте Docker.
+    privileged: true
+    cgroup: host
+    environment:
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-devops_project}
+    command:
+      - run
+      - --storage.path=/var/lib/alloy
+      - --server.http.listen-addr=0.0.0.0:12345
+      - /etc/alloy/config.alloy
+    volumes:
+      - ./monitoring/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - application_logs:/app/logs:ro
+      - alloy_data:/var/lib/alloy
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /:/rootfs:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /run/containerd:/run/containerd:ro
+    depends_on:
+      - loki
+    mem_limit: 384m
+    cpus: 0.5
     restart: unless-stopped
 
   db:
@@ -109,3 +231,8 @@ volumes:
   pgdata:
   kafka_data:
   vault_data:
+  prometheus_data:
+  grafana_data:
+  loki_data:
+  alloy_data:
+  application_logs:

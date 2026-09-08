@@ -32,7 +32,7 @@ FOR EACH ROW EXECUTE FUNCTION audit_model_role();
 
 CREATE FUNCTION forbid_change() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-    RAISE EXCEPTION 'Records in % are immutable; create a new version', TG_TABLE_NAME;
+    RAISE EXCEPTION 'Записи в % неизменяемы; создайте новую версию', TG_TABLE_NAME;
 END $$;
 CREATE TRIGGER immutable_dataset BEFORE UPDATE OR DELETE ON datasets
 FOR EACH ROW EXECUTE FUNCTION forbid_change();
@@ -52,10 +52,10 @@ FOR EACH ROW EXECUTE FUNCTION forbid_change();
 CREATE FUNCTION protect_model_version() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     IF TG_OP = 'DELETE' THEN
-        RAISE EXCEPTION 'Archive model versions instead of deleting';
+        RAISE EXCEPTION 'Версии моделей нужно архивировать, а не удалять';
     END IF;
     IF (to_jsonb(NEW) - 'role') IS DISTINCT FROM (to_jsonb(OLD) - 'role') THEN
-        RAISE EXCEPTION 'Only the role of a registered model version can change';
+        RAISE EXCEPTION 'У зарегистрированной версии модели можно изменить только роль';
     END IF;
     RETURN NEW;
 END $$;
@@ -65,11 +65,11 @@ FOR EACH ROW EXECUTE FUNCTION protect_model_version();
 CREATE FUNCTION protect_feedback_identity() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     IF TG_OP = 'DELETE' THEN
-        RAISE EXCEPTION 'Correct feedback instead of deleting it';
+        RAISE EXCEPTION 'Обратную связь можно исправить, но нельзя удалить';
     END IF;
     IF (to_jsonb(NEW) - ARRAY['true_label', 'created_by_user_id', 'updated_at'])
        IS DISTINCT FROM (to_jsonb(OLD) - ARRAY['true_label', 'created_by_user_id', 'updated_at']) THEN
-        RAISE EXCEPTION 'Feedback must remain attached to its original study';
+        RAISE EXCEPTION 'Обратная связь должна оставаться связанной с исходным исследованием';
     END IF;
     IF NEW.true_label = OLD.true_label THEN
         NEW.updated_at := OLD.updated_at;
@@ -79,3 +79,32 @@ BEGIN
 END $$;
 CREATE TRIGGER feedback_identity_guard BEFORE UPDATE OR DELETE ON feedback
 FOR EACH ROW EXECUTE FUNCTION protect_feedback_identity();
+
+-- Правка показателей разрешена только в транзакции административного пересчёта.
+CREATE OR REPLACE FUNCTION protect_study_recalculation() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'DELETE' OR current_setting('app.recalculate_study', true) IS DISTINCT FROM 'on' THEN
+        RAISE EXCEPTION 'Для изменения данных исследования используйте административный пересчёт';
+    END IF;
+    IF TG_TABLE_NAME = 'studies' AND
+       (to_jsonb(NEW) - ARRAY['pregnancies','glucose','blood_pressure','skin_thickness','insulin','bmi','diabetes_pedigree_function','age'])
+       IS DISTINCT FROM
+       (to_jsonb(OLD) - ARRAY['pregnancies','glucose','blood_pressure','skin_thickness','insulin','bmi','diabetes_pedigree_function','age']) THEN
+        RAISE EXCEPTION 'Код пациента и дату исследования менять нельзя';
+    END IF;
+    IF TG_TABLE_NAME = 'predictions' AND
+       (to_jsonb(NEW) - ARRAY['prediction','probability','response_time_ms'])
+       IS DISTINCT FROM (to_jsonb(OLD) - ARRAY['prediction','probability','response_time_ms']) THEN
+        RAISE EXCEPTION 'Исследование, версию и исходную роль прогноза менять нельзя';
+    END IF;
+    RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS immutable_studies ON studies;
+CREATE TRIGGER immutable_studies BEFORE UPDATE OR DELETE ON studies
+FOR EACH ROW EXECUTE FUNCTION protect_study_recalculation();
+DROP TRIGGER IF EXISTS immutable_predictions ON predictions;
+CREATE TRIGGER immutable_predictions BEFORE UPDATE OR DELETE ON predictions
+FOR EACH ROW EXECUTE FUNCTION protect_study_recalculation();
+DROP TRIGGER IF EXISTS immutable_study_edits ON study_edits;
+CREATE TRIGGER immutable_study_edits BEFORE UPDATE OR DELETE ON study_edits
+FOR EACH ROW EXECUTE FUNCTION forbid_change();

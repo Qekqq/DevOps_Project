@@ -1,30 +1,41 @@
 """Проверка API и Kafka на отдельном тестовом исследовании в работающем стенде."""
 
 import json
+import secrets
 import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
+from http.cookies import SimpleCookie
+from uuid import uuid4
 
 from sqlalchemy import select
 
 from src.db.database import get_session_factory
-from src.db.models import ModelVersion, PredictionHistory, Study
+from src.db.models import ModelVersion, PredictionHistory, Study, User
+from src.passwords import hash_password
+
+TOKEN = None
+CSRF = None
 
 
 def request(payload):
     query = urllib.request.Request(
-        "http://diabetes-api:8000/predict",
+        "http://frontend/api/predict",
         data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "Cookie": f"dp_session={TOKEN}",
+            "X-CSRF-Token": CSRF,
+        },
         method="POST",
     )
     with urllib.request.urlopen(query, timeout=20) as response:
         return json.load(response)
 
 
-def main():
+def check_prediction_flow():
     payload = dict(
         patient_code="ITG001",
         study_date="2026-09-08",
@@ -75,9 +86,11 @@ def main():
         if time.monotonic() >= deadline:
             raise RuntimeError("Kafka consumer не сохранил прогнозы обеих моделей")
         time.sleep(1)
-    assert request(payload) == first, (
-        "Повторный запрос должен вернуть сохранённый результат"
-    )
+    repeated = request(payload)
+    assert repeated["cached"] is True
+    assert {key: value for key, value in repeated.items() if key != "cached"} == {
+        key: value for key, value in first.items() if key != "cached"
+    }, "Повторный запрос должен вернуть сохранённый результат"
     try:
         request({**payload, "glucose": 149})
     except urllib.error.HTTPError as error:
@@ -101,5 +114,39 @@ def main():
     print("Тестовое исследование ITG001 от 2026-09-08 сохранено без обратной связи.")
 
 
-if __name__ == "__main__":
-    main()
+def test_authenticated_prediction_flow():
+    global TOKEN, CSRF
+    username = "ci_" + uuid4().hex
+    password = secrets.token_urlsafe(32)
+    factory = get_session_factory()
+    with factory() as db:
+        user = User(
+            username=username, password_hash=hash_password(password), role="user"
+        )
+        db.add(user)
+        db.commit()
+        user_id = user.id
+    try:
+        query = urllib.request.Request(
+            "http://frontend/api/auth/login",
+            data=json.dumps({"username": username, "password": password}).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "X-Requested-With": "DiabetesPredict",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(query, timeout=20) as response:
+            cookie = SimpleCookie(response.headers["Set-Cookie"])
+            assert cookie["dp_session"]["httponly"]
+            TOKEN = cookie["dp_session"].value
+            CSRF = json.load(response)["csrf_token"]
+        with urllib.request.urlopen("http://frontend/", timeout=20) as response:
+            assert "Diabetes Predict" in response.read().decode()
+        check_prediction_flow()
+    finally:
+        with factory() as db:
+            db.get(User, user_id).is_active = False
+            db.commit()
+        TOKEN = None
+        CSRF = None

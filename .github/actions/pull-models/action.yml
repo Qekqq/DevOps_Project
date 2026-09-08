@@ -1,16 +1,16 @@
-name: Restore DVC models
-description: Configure WebDAV credentials and download the locked model release
+name: Загрузка моделей из DVC
+description: Настройка доступа WebDAV и загрузка зафиксированного выпуска моделей
 inputs:
   user:
-    description: Yandex account login
+    description: Логин аккаунта Яндекс
     required: true
   password:
-    description: Yandex WebDAV application password
+    description: Пароль приложения Яндекс для WebDAV
     required: true
 runs:
   using: composite
   steps:
-    - name: Download model artifacts
+    - name: Загрузка артефактов моделей
       shell: bash
       env:
         DVC_YANDEX_USER: ${{ inputs.user }}

@@ -8,3 +8,6 @@ select = ["E4", "E7", "E9", "F", "I"]
 
 [tool.ruff.lint.per-file-ignores]
 "notebooks/*.ipynb" = ["E402"]
+
+[tool.pytest.ini_options]
+markers = ["integration: требуется отдельный одноразовый стенд Compose"]

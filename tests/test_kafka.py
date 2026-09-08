@@ -23,7 +23,6 @@ VALID_MESSAGE = {
     "prediction": 1,
     "probability": 0.81,
     "label": "detected",
-    "request_source": "api",
     "response_time_ms": 12,
 }
 
@@ -139,6 +138,20 @@ def test_create_consumer_retries_until_broker_available(monkeypatch):
 
     assert consumer is sentinel_consumer
     assert attempts["count"] == 3
+
+
+def test_consumer_health_checks_working_connection_after_bootstrap_closes():
+    consumer = SimpleNamespace(
+        _client=SimpleNamespace(
+            _conns={
+                "bootstrap-0": SimpleNamespace(connected=lambda: False),
+                1: SimpleNamespace(connected=lambda: True),
+            }
+        )
+    )
+    assert consumer_module.consumer_connected(consumer)
+    consumer._client._conns.pop(1)
+    assert not consumer_module.consumer_connected(consumer)
 
 
 @pytest.mark.parametrize("fails", [False, True])

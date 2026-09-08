@@ -1,9 +1,9 @@
-# Virtual environment
+# Виртуальное окружение
 .venv/
 venv/
 env/
 
-# Python cache
+# Кеш Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -11,28 +11,29 @@ __pycache__/
 # Jupyter
 .ipynb_checkpoints/
 
-# Environment variables
+# Локальные настройки и секреты
 .env
+.env.*
 *.kdbx
 *.keyx
 
-# IDE
+# Настройки редактора
 .vscode/
 
-# OS files
+# Служебные файлы ОС
 .DS_Store
 Thumbs.db
 
-# Pytest / coverage
+# Кеш тестов и отчёты покрытия
 .pytest_cache/
 .ruff_cache/
 .coverage
 htmlcov/
 
-# DVC cache
+# Кеш DVC
 .dvc/cache/
 
-# Logs
+# Журналы
 logs/
 *.log
 /models

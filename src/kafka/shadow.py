@@ -3,17 +3,19 @@
 import time
 from datetime import date
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from src.db.database import get_session_factory
 from src.db.models import ModelVersion
 from src.db.repositories import (
     DuplicatePredictionError,
+    StudyConflictError,
     get_prediction_for_study,
     save_prediction_history,
 )
 from src.logger import get_logger
 from src.model_registry import ModelRegistry
+from src.telemetry import measure_inference
 
 registry = ModelRegistry()
 logger = get_logger(__name__)
@@ -37,6 +39,12 @@ def predict_challengers(message):
     for version in versions:
         try:
             with session_factory() as db:
+                db.execute(
+                    text(
+                        "SELECT pg_advisory_xact_lock(hashtextextended(:patient_code, 0))"
+                    ),
+                    {"patient_code": message["patient_code"]},
+                )
                 # Повторно проверяем роль: отключённые версии больше не запускаем.
                 model = db.execute(
                     select(ModelVersion).where(
@@ -56,7 +64,9 @@ def predict_challengers(message):
                 if saved is not None:
                     continue
                 started = time.perf_counter()
-                result = registry.from_record(model).predict(message["features"])
+                predictor = registry.from_record(model)
+                with measure_inference("challenger", "predict"):
+                    result = predictor.predict(message["features"])
                 save_prediction_history(
                     db,
                     features=message["features"],
@@ -65,11 +75,12 @@ def predict_challengers(message):
                     model_version=model,
                     study_date=study_date,
                     patient_code=message["patient_code"],
-                    request_source=message.get("request_source", "api"),
                     response_time_ms=int((time.perf_counter() - started) * 1000),
                     role_at_prediction="challenger",
                 )
                 db.commit()
+        except StudyConflictError:
+            return
         except DuplicatePredictionError:
             pass
         except Exception:

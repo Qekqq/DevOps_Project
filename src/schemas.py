@@ -92,6 +92,9 @@ class PredictionResponse(BaseModel):
     Схема ответа API с результатом предсказания.
     """
 
+    cached: bool = Field(
+        default=False, description="Возвращён ранее сохранённый прогноз"
+    )
     prediction: Literal[0, 1] = Field(..., description="Класс предсказания: 0 или 1.")
     probability: float = Field(
         ...,

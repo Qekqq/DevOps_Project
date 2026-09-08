@@ -20,3 +20,4 @@ hvac==2.4.0
 requests==2.34.2
 
 kafka-python==2.0.2
+prometheus-client==0.26.0

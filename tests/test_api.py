@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.exc import SQLAlchemyError
 
 import src.app as app_module
+from src.auth import current_user
 from src.predict import DiabetesPredictor
 
 TEST_PREDICTOR = DiabetesPredictor()
@@ -25,21 +26,34 @@ def mock_kafka_layer(monkeypatch):
         lambda *args, **kwargs: None,
     )
 
+    app_module.app.dependency_overrides[current_user] = lambda: SimpleNamespace(
+        id=1, role="user"
+    )
     yield
+    app_module.app.dependency_overrides.pop(current_user, None)
 
 
 client = TestClient(app_module.app)
 
 
-def test_browser_preflight_allows_configured_frontend_only():
+def test_anonymous_prediction_does_not_run_model(monkeypatch):
+    app_module.app.dependency_overrides.pop(current_user, None)
+    predictor = Mock()
+    monkeypatch.setattr(app_module.model_registry, "from_record", predictor)
+    response = client.post("/predict", json=VALID_INPUT)
+    assert response.status_code == 401
+    predictor.assert_not_called()
+
+
+def test_cross_origin_browser_requests_are_not_enabled():
     headers = {
         "Origin": "http://localhost:5173",
         "Access-Control-Request-Method": "POST",
         "Access-Control-Request-Headers": "content-type,authorization",
     }
     allowed = client.options("/predict", headers=headers)
-    assert allowed.status_code == 200
-    assert allowed.headers["access-control-allow-origin"] == headers["Origin"]
+    assert allowed.status_code == 400
+    assert "access-control-allow-origin" not in allowed.headers
     denied = client.options(
         "/predict", headers={**headers, "Origin": "https://unknown.example"}
     )
@@ -132,7 +146,7 @@ def test_champion_switch_changes_predictor_and_message_version(monkeypatch):
     for version in ("v1", "v2"):
         response = client.post("/predict", json=VALID_INPUT)
         assert response.status_code == 200
-        assert response.json() == results[version]
+        assert response.json() == {**results[version], "cached": False}
         assert published[-1]["model_version"] == version
 
 
@@ -459,7 +473,7 @@ def test_predict_returns_saved_result_without_prediction_or_publication(
     response = client.post("/predict", json={**VALID_INPUT, "patient_code": " pat001 "})
 
     assert response.status_code == 200
-    assert response.json() == saved_result
+    assert response.json() == {**saved_result, "cached": True}
     predict.assert_not_called()
     publish.assert_not_called()
 
@@ -511,7 +525,7 @@ def test_predict_calculates_new_model_for_unchanged_study(
     response = client.post("/predict", json=VALID_INPUT)
 
     assert response.status_code == 200
-    assert response.json() == result
+    assert response.json() == {**result, "cached": False}
     predict.assert_called_once_with(features)
     publish.assert_called_once()
 

@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 
+from scripts.update_database import main as update_database
 from src.db.database import get_session_factory
 from src.db.load_raw_dataset import import_raw_dataset
 from src.db.models import FeedbackHistory, ModelRoleHistory, Study
@@ -14,7 +15,10 @@ from src.db.repositories import save_prediction_feedback
 from src.feedback_dataset import read_confirmed_studies, save_snapshot
 
 
-def main():
+def test_database_contract():
+    # Повторное применение обновления сохраняет ограничения и не дублирует аудит.
+    update_database()
+    update_database()
     with get_session_factory()() as db, TemporaryDirectory() as folder:
         try:
             assert (
@@ -118,7 +122,3 @@ def main():
             )
         finally:
             db.rollback()
-
-
-if __name__ == "__main__":
-    main()

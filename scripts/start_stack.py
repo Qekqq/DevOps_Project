@@ -6,6 +6,7 @@ import os
 import secrets
 import shutil
 import subprocess
+import sys
 import time
 from getpass import getpass
 from pathlib import Path
@@ -59,18 +60,6 @@ class KeePassCredentials:
             raise RuntimeError(
                 "Не удалось проверить сохранённые ключи Vault в KeePassXC."
             )
-
-
-def legacy_settings(path):
-    """Однократный импорт; значения никогда не выводятся и не копируются в файлы."""
-    result = {}
-    for line in path.read_text(encoding="utf-8-sig").splitlines():
-        key, separator, value = line.partition("=")
-        if separator and key.strip() in DATABASE_KEYS:
-            result[key.strip()] = value.strip().strip("\"'")
-    if not all(result.get(key) for key in DATABASE_KEYS):
-        raise ValueError("В старом .env отсутствуют реквизиты PostgreSQL.")
-    return result
 
 
 def wait_until(check, message, timeout=120):
@@ -167,25 +156,24 @@ def main():
         "--keepass-key-file",
         help="Дополнительный ключевой файл KeePassXC, если используется",
     )
-    parser.add_argument(
-        "--migrate-env",
-        action="store_true",
-        help="Перенести существующие реквизиты, после проверки удалить .env",
-    )
     parser.add_argument("--project", default="devops_project")
     parser.add_argument("--compose-file", action="append", default=[])
     parser.add_argument("--vault-url", default="http://127.0.0.1:8201")
     parser.add_argument("--api-url", default="http://127.0.0.1:8001")
-    parser.add_argument("--no-build", action="store_true")
+    parser.add_argument(
+        "--no-build",
+        action="store_true",
+        help="Использовать готовые Python-образы API, обработчика Kafka и экспортера метрик",
+    )
     parser.add_argument(
         "--check", action="store_true", help="Интеграционные проверки на чистом стенде"
     )
     args = parser.parse_args()
-    if args.ci and args.migrate_env:
-        parser.error("--ci и --migrate-env несовместимы")
+    if args.check and not args.ci:
+        parser.error("--check разрешён только с --ci на одноразовом стенде")
     if not args.ci and not args.keepass_db:
         parser.error("Укажите --keepass-db с путём к базе KeePassXC")
-    initial = legacy_settings(ROOT / ".env") if args.migrate_env else {}
+    initial = {}
     env = dict(os.environ, COMPOSE_DISABLE_ENV_FILE="1")
     for key in ("VAULT_TOKEN", "VAULT_UNSEAL_KEY"):
         env.pop(key, None)
@@ -202,7 +190,8 @@ def main():
         else KeePassCredentials(args.keepass_db, args.project, args.keepass_key_file)
     )
     if not args.no_build:
-        run("build", "diabetes-api", "kafka-consumer")
+        run("build", "diabetes-api", "kafka-consumer", "metrics-exporter")
+    run("build", "frontend")
     run("up", "-d", "vault")
     client = hvac.Client(url=args.vault_url, timeout=10)
     wait_until(lambda: client.sys.read_seal_status() is not None, "Vault не отвечает")
@@ -274,58 +263,62 @@ def main():
         "models/current.json",
         "--if-no-champion",
     )
-    run("up", "-d", "--no-build", "diabetes-api", "kafka-consumer")
+    run(
+        "up",
+        "-d",
+        "--no-build",
+        "diabetes-api",
+        "kafka-consumer",
+        "metrics-exporter",
+        "prometheus",
+        "grafana",
+        "alloy",
+        "frontend",
+    )
     wait_until(
         lambda: requests.get(args.api_url + "/db/health", timeout=5).ok, "API не готов"
     )
     if args.check:
         run(
-            "exec",
-            "-T",
+            "run",
+            "--rm",
+            "--no-deps",
+            "-v",
+            f"{ROOT / 'tests'}:/app/tests:ro",
+            "-e",
+            "RUN_INTEGRATION_TESTS=1",
             "diabetes-api",
             "python",
             "-m",
-            "scripts.check_database_contract",
+            "pytest",
+            "tests/integration/test_database_contract.py",
+            "tests/integration/test_prediction_flow.py",
+            "tests/integration/test_monitoring_stack.py",
+            "-v",
+            "-p",
+            "no:cacheprovider",
         )
-        run(
-            "exec",
-            "-T",
-            "diabetes-api",
-            "python",
-            "-m",
-            "scripts.check_prediction_flow",
+        test_env = dict(
+            env,
+            RUN_INTEGRATION_TESTS="1",
+            TEST_VAULT_URL=args.vault_url,
+            TEST_API_URL=args.api_url,
+            TEST_VAULT_TOKEN=bootstrap["root_token"],
+            TEST_VAULT_UNSEAL_KEY=bootstrap["unseal_key"],
+            TEST_COMPOSE_COMMAND=json.dumps(compose),
         )
-        service = hvac.Client(url=args.vault_url)
-        service.auth.approle.login(
-            role_id=identities["API_VAULT_ROLE_ID"],
-            secret_id=identities["API_VAULT_SECRET_ID"],
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "tests/integration/test_vault_lifecycle.py",
+                "-v",
+            ],
+            cwd=ROOT,
+            env=test_env,
+            check=True,
         )
-        for path in ("secret/data/database/postgres", "secret/data/kafka/config"):
-            assert service.sys.get_capabilities(paths=[path])["data"][
-                "capabilities"
-            ] == ["read"]
-        assert service.sys.get_capabilities(paths=["sys/policies/acl"])["data"][
-            "capabilities"
-        ] == ["deny"]
-        run("restart", "vault")
-        wait_until(client.sys.is_sealed, "Vault не перезапустился")
-        client.sys.submit_unseal_key(bootstrap["unseal_key"])
-        assert (
-            client.secrets.kv.v2.read_secret_version(
-                path="database/postgres",
-                raise_on_deleted_version=True,
-            )["data"]["data"]
-            == database
-        )
-        run("restart", "diabetes-api", "kafka-consumer")
-        wait_until(
-            lambda: requests.get(args.api_url + "/db/health", timeout=5).ok,
-            "API не восстановился",
-        )
-        print("Права AppRole и сохранность Vault после перезапуска проверены.")
-    if args.migrate_env:
-        (ROOT / ".env").unlink()
-        print("Реквизиты перенесены в Vault, проверка БД пройдена, .env удалён.")
     print("Сервисы запущены. Секреты приложения хранятся в Vault.")
 
 
