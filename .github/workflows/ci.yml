@@ -94,15 +94,3 @@ jobs:
           tags: |
             ${{ env.IMAGE_NAME }}:latest
             ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
-
-  cd:
-    if: ${{ github.event_name != 'pull_request' }}
-    needs: docker-build-and-push
-    permissions:
-      contents: read
-    uses: ./.github/workflows/cd.yml
-    secrets:
-      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-    with:
-      image_tag: ${{ github.sha }}
