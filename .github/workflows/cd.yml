@@ -1,28 +1,37 @@
 name: CD
 
 on:
-  workflow_call:
-    inputs:
-      image_tag:
-        required: true
-        type: string
-    secrets:
-      DOCKERHUB_USERNAME:
-        required: true
-      DOCKERHUB_TOKEN:
-        required: true
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [develop, main]
+  workflow_dispatch:
 
 jobs:
   compose-functional-tests:
+    name: Run Docker Compose functional tests
+    # PR builds do not publish images. Only successful push/manual CI runs qualify.
+    if: >-
+      (github.event_name == 'workflow_dispatch' &&
+       (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main')) ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       (github.event.workflow_run.event == 'push' ||
+        github.event.workflow_run.event == 'workflow_dispatch'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
     env:
-      IMAGE_TAG: ${{ inputs.image_tag }}
+      # workflow_run's github.sha belongs to the default branch, not the tested commit.
+      IMAGE_TAG: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
       IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/devops_project
       COMPOSE_DISABLE_ENV_FILE: "1"
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.IMAGE_TAG }}
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
