@@ -2,6 +2,8 @@
 venv/
 env/
 .env
+*.kdbx
+*.keyx
 .env.*
 **/.env
 **/.env.*

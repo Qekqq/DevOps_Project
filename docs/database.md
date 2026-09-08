@@ -51,11 +51,12 @@ NULL показателей не допускается. Нули пяти из�
 Чистый запуск после получения моделей через DVC:
 
 ```powershell
-docker compose build
-docker compose run --rm diabetes-api python -m src.register_release models/current.json --apply
-docker compose run --rm --no-deps diabetes-api python -m scripts.activate_model_release models/current.json
-docker compose up -d --no-build diabetes-api kafka-consumer
+.\.venv\Scripts\python.exe -m scripts.start_stack --keepass-db "путь\к\vault-keys.kdbx"
 ```
+
+Команда разблокирует постоянный Vault, передаёт контейнерам отдельные AppRole,
+регистрирует выпуск и назначает champion только если её ещё нет.
+Существующие роли моделей и данные БД сохраняются. Подробнее: [секреты](secrets.md).
 
 `check_database_contract` проверяет ограничения, аудит и неизменяемость снимков
 и откатывает свои тестовые записи. `check_prediction_flow` предназначен для

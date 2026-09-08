@@ -1,5 +1,4 @@
 import os
-from functools import lru_cache
 
 import hvac
 
@@ -42,11 +41,10 @@ def get_vault_client() -> hvac.Client:
     Создаёт клиент для подключения к Hashicorp Vault.
     """
     vault_addr = get_required_env("VAULT_ADDR")
-    vault_token = get_required_env("VAULT_TOKEN")
-
-    client = hvac.Client(
-        url=vault_addr,
-        token=vault_token,
+    client = hvac.Client(url=vault_addr)
+    client.auth.approle.login(
+        role_id=get_required_env("VAULT_ROLE_ID"),
+        secret_id=get_required_env("VAULT_SECRET_ID"),
     )
 
     if not client.is_authenticated():
@@ -101,7 +99,6 @@ def validate_secret_keys(
     }
 
 
-@lru_cache
 def get_database_secrets() -> dict[str, str]:
     """
     Получает параметры подключения к PostgreSQL из Hashicorp Vault.
@@ -118,7 +115,6 @@ def get_database_secrets() -> dict[str, str]:
     )
 
 
-@lru_cache
 def get_kafka_secrets() -> dict[str, str]:
     """
     Получает параметры подключения к Kafka из Hashicorp Vault.

@@ -5,11 +5,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    env_file:
-      - .env
     environment:
       PYTHONUNBUFFERED: "1"
       VAULT_ADDR: http://vault:8200
+      VAULT_ROLE_ID: ${API_VAULT_ROLE_ID:-}
+      VAULT_SECRET_ID: ${API_VAULT_SECRET_ID:-}
       VAULT_KV_MOUNT: secret
       VAULT_DB_SECRET_PATH: database/postgres
       VAULT_KAFKA_SECRET_PATH: kafka/config
@@ -22,8 +22,6 @@ services:
         condition: service_healthy
       vault:
         condition: service_healthy
-      vault-init:
-        condition: service_completed_successfully
       kafka:
         condition: service_healthy
     restart: unless-stopped
@@ -32,11 +30,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    env_file:
-      - .env
     environment:
       PYTHONUNBUFFERED: "1"
       VAULT_ADDR: http://vault:8200
+      VAULT_ROLE_ID: ${CONSUMER_VAULT_ROLE_ID:-}
+      VAULT_SECRET_ID: ${CONSUMER_VAULT_SECRET_ID:-}
       VAULT_KV_MOUNT: secret
       VAULT_DB_SECRET_PATH: database/postgres
       VAULT_KAFKA_SECRET_PATH: kafka/config
@@ -46,8 +44,6 @@ services:
         condition: service_healthy
       vault:
         condition: service_healthy
-      vault-init:
-        condition: service_completed_successfully
       kafka:
         condition: service_healthy
     restart: unless-stopped
@@ -55,8 +51,10 @@ services:
   db:
     image: postgres:16
     restart: unless-stopped
-    env_file:
-      - .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-diabetes}
+      POSTGRES_USER: ${POSTGRES_USER:-diabetes}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
     ports:
       - "127.0.0.1:5433:5432"
     volumes:
@@ -73,36 +71,17 @@ services:
     restart: unless-stopped
     cap_add:
       - IPC_LOCK
-    env_file:
-      - .env
-    environment:
-      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_TOKEN}
-      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+    volumes:
+      - vault_data:/vault/file
+      - ./vault/server.hcl:/vault/config/server.hcl:ro
     ports:
       - "127.0.0.1:8201:8200"
-    command: server -dev
+    command: server
     healthcheck:
       test: ["CMD-SHELL", "VAULT_ADDR=http://127.0.0.1:8200 vault status >/dev/null 2>&1"]
       interval: 5s
       timeout: 5s
       retries: 20
-
-  vault-init:
-    image: hashicorp/vault:1.17
-    env_file:
-      - .env
-    environment:
-      VAULT_ADDR: http://vault:8200
-      VAULT_KV_MOUNT: secret
-      VAULT_DB_SECRET_PATH: database/postgres
-      VAULT_KAFKA_SECRET_PATH: kafka/config
-    volumes:
-      - ./vault/init-vault.sh:/vault/init-vault.sh:ro
-    entrypoint: ["/bin/sh", "/vault/init-vault.sh"]
-    depends_on:
-      vault:
-        condition: service_healthy
-    restart: "no"
 
   kafka:
     image: bitnamilegacy/kafka:3.7
@@ -129,3 +108,4 @@ services:
 volumes:
   pgdata:
   kafka_data:
+  vault_data:

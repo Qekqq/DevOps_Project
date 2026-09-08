@@ -12,12 +12,16 @@ from src.register_release import validate_release
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("manifest")
+    parser.add_argument("--if-no-champion", action="store_true")
     args = parser.parse_args()
     manifest = validate_release(args.manifest)
     versions = {record["version"]: record for record in manifest["models"]}
     with get_session_factory()() as db:
         db.execute(text("LOCK TABLE model_versions IN EXCLUSIVE MODE"))
         records = db.scalars(select(ModelVersion)).all()
+        if args.if_no_champion and any(record.role == "champion" for record in records):
+            print("Действующая champion сохранена; роли моделей не изменены.")
+            return
         registered = {record.model_version: record for record in records}
         for version, spec in versions.items():
             record = registered.get(version)

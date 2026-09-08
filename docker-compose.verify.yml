@@ -1,9 +1,9 @@
 # Изолированный локальный стенд: запускать с -p devops_verify.
 services:
   diabetes-api:
-    ports: !reset []
+    ports: !override ["127.0.0.1:18001:8000"]
     volumes: !reset []
   db:
-    ports: !reset []
+    ports: !override ["127.0.0.1:15433:5432"]
   vault:
-    ports: !reset []
+    ports: !override ["127.0.0.1:18201:8200"]

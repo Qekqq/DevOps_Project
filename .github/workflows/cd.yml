@@ -6,72 +6,46 @@ on:
       image_tag:
         required: true
         type: string
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: true
+      DOCKERHUB_TOKEN:
+        required: true
 
 jobs:
   compose-functional-tests:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: read
     env:
       IMAGE_TAG: ${{ inputs.image_tag }}
+      IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/devops_project
+      COMPOSE_DISABLE_ENV_FILE: "1"
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install bootstrap dependencies
+        run: python -m pip install hvac==2.4.0
       - uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Create isolated test configuration
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Select exact tested image
         run: |
-          python - <<'PY'
-          import secrets
-          from pathlib import Path
-          password = secrets.token_hex(24)
-          token = secrets.token_hex(24)
-          print(f"::add-mask::{password}")
-          print(f"::add-mask::{token}")
-          Path('.env').write_text(
-              'POSTGRES_HOST=db\nPOSTGRES_PORT=5432\nPOSTGRES_DB=diabetes_ci\n'
-              'POSTGRES_USER=diabetes_ci\n'
-              f'POSTGRES_PASSWORD={password}\nVAULT_TOKEN={token}\n'
-              'KAFKA_BOOTSTRAP_SERVERS=kafka:9092\n'
-              'KAFKA_PREDICTION_TOPIC=prediction-results\n'
-              'KAFKA_CONSUMER_GROUP=prediction-results-consumer\n'
-          )
-          PY
           cat > docker-compose.override.yml <<'YAML'
           services:
             diabetes-api:
-              image: ghcr.io/qekqq/devops_project:${IMAGE_TAG}
+              image: ${IMAGE_NAME}:${IMAGE_TAG}
             kafka-consumer:
-              image: ghcr.io/qekqq/devops_project:${IMAGE_TAG}
+              image: ${IMAGE_NAME}:${IMAGE_TAG}
           YAML
-      - name: Pull exact tested image
-        run: docker compose pull diabetes-api kafka-consumer
-      - name: Start infrastructure
-        run: docker compose up -d db vault vault-init kafka
-      - name: Register models and activate release
-        run: |
-          docker compose run --rm diabetes-api python -m src.register_release models/current.json --apply
-          docker compose run --rm diabetes-api python -m scripts.activate_model_release models/current.json
-      - name: Start application
-        run: docker compose up -d --no-build diabetes-api kafka-consumer
-      - name: Wait for API
-        run: |
-          for i in {1..30}; do
-            if curl --fail --silent http://127.0.0.1:8001/db/health; then exit 0; fi
-            sleep 2
-          done
-          exit 1
-      - name: Verify API Kafka and both models
-        run: docker compose exec -T diabetes-api python -m scripts.check_prediction_flow
-      - name: Verify database constraints and audit
-        run: docker compose exec -T diabetes-api python -m scripts.check_database_contract
-      - name: Verify raw dataset import is idempotent
-        run: |
-          docker compose exec -T diabetes-api python -m src.db.load_dataset
-          docker compose exec -T db sh -c 'test "$(psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT count(*) FROM dataset_rows")" = 768'
+          docker compose pull diabetes-api kafka-consumer
+      - name: Start isolated Vault and run functional checks
+        run: >-
+          python -m scripts.start_stack --ci --no-build --check
+          --compose-file docker-compose.override.yml
       - name: Service diagnostics
         if: failure()
         run: |
