@@ -1,2 +1,6 @@
 [core]
     analytics = false
+    remote = yandex
+['remote "yandex"']
+    url = webdavs://webdav.yandex.ru/DevOps_Project_DVC
+    jobs = 2

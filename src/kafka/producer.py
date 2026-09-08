@@ -43,7 +43,6 @@ def send_prediction_message(message: dict, key: str | None = None) -> None:
     topic = kafka_settings["KAFKA_PREDICTION_TOPIC"]
 
     producer = get_producer()
-    producer.send(topic, value=message, key=key)
-    producer.flush(timeout=10)
+    producer.send(topic, value=message, key=key).get(timeout=10)
 
     logger.info("Prediction message published to topic '%s'.", topic)

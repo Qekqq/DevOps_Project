@@ -88,6 +88,15 @@ def test_unloadable_champion_returns_503_without_publication(monkeypatch):
     publish.assert_not_called()
 
 
+def test_failed_kafka_publication_returns_503(monkeypatch):
+    def unavailable(*args, **kwargs):
+        raise RuntimeError("broker unavailable")
+    monkeypatch.setattr(app_module, "send_prediction_message", unavailable)
+    response = client.post("/predict", json=VALID_INPUT)
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Не удалось передать прогноз на сохранение. Повторите попытку позже."
+
+
 def test_health_check_returns_ok_status():
     response = client.get("/health")
 

@@ -72,13 +72,14 @@ def publish_prediction(
     """
     Публикует результат прогноза в Kafka (роль Producer).
 
-    Если Kafka недоступна, API всё равно возвращает результат прогноза.
+    При недоступной Kafka запрос не считается принятым на сохранение.
     """
     try:
         message = build_prediction_message(input_data, result, response_time_ms, model_version)
         send_prediction_message(message, key=input_data.patient_code)
     except Exception as error:  # noqa: BLE001
         logger.error("Не удалось опубликовать прогноз в Kafka: %s", error)
+        raise HTTPException(status_code=503, detail="Не удалось передать прогноз на сохранение. Повторите попытку позже.") from error
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -158,6 +159,8 @@ def predict_diabetes(input_data: DiabetesInput) -> PredictionResponse:
 
         return PredictionResponse(**result)
 
+    except HTTPException:
+        raise
     except ValueError as error:
         logger.error("Ошибка валидации при выполнении прогноза: %s", error)
         raise HTTPException(status_code=400, detail="Не удалось обработать данные для прогноза. Проверьте введённые значения.")

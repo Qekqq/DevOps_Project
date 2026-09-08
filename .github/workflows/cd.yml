@@ -308,7 +308,7 @@ jobs:
           docker compose -f docker-compose.cd.yml logs kafka-consumer
           exit 1
 
-      - name: Load processed dataset into PostgreSQL
+      - name: Load raw dataset into PostgreSQL
         run: |
           docker compose -f docker-compose.cd.yml exec -T diabetes-api python -m src.db.load_dataset
 
@@ -318,17 +318,17 @@ jobs:
           POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
         run: |
           PREDICTION_ROWS=$(docker compose -f docker-compose.cd.yml exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT COUNT(*) FROM prediction_history;" | tr -d '[:space:]')
-          DATASET_ROWS=$(docker compose -f docker-compose.cd.yml exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT COUNT(*) FROM dataset_samples;" | tr -d '[:space:]')
+          DATASET_ROWS=$(docker compose -f docker-compose.cd.yml exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT COUNT(*) FROM raw_dataset_samples;" | tr -d '[:space:]')
 
           echo "prediction_history rows: $PREDICTION_ROWS"
-          echo "dataset_samples rows: $DATASET_ROWS"
+          echo "raw_dataset_samples rows: $DATASET_ROWS"
 
           test "$PREDICTION_ROWS" -gt 0
           test "$DATASET_ROWS" -gt 0
 
           docker compose -f docker-compose.cd.yml exec -T db \
             psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
-            -c "SELECT split, COUNT(*) AS rows_count FROM dataset_samples GROUP BY split ORDER BY split;"
+            -c "SELECT dataset_id, COUNT(*) AS rows_count FROM raw_dataset_samples GROUP BY dataset_id ORDER BY dataset_id;"
 
       - name: Show consumer logs
         if: always()

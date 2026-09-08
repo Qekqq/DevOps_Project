@@ -1,4 +1,6 @@
 import pytest
+from types import SimpleNamespace
+from unittest.mock import Mock
 from datetime import date
 from kafka.errors import NoBrokersAvailable
 
@@ -33,6 +35,10 @@ class FakeProducer:
 
     def send(self, topic, value=None, key=None) -> None:
         self.sent.append((topic, value, key))
+        return self
+
+    def get(self, timeout=None):
+        self.flushed = True
 
     def flush(self, timeout=None) -> None:
         self.flushed = True
@@ -132,3 +138,27 @@ def test_create_consumer_retries_until_broker_available(monkeypatch):
 
     assert consumer is sentinel_consumer
     assert attempts["count"] == 3
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_consumer_acknowledges_only_successful_database_write(monkeypatch, fails):
+    record = SimpleNamespace(value=VALID_MESSAGE, topic="predictions", partition=0, offset=8)
+    class Consumer:
+        commit = Mock()
+        close = Mock()
+        def __iter__(self):
+            return iter([record])
+    consumer = Consumer()
+    monkeypatch.setattr(consumer_module, "create_consumer", lambda: consumer)
+    monkeypatch.setattr(consumer_module, "predict_challengers", Mock())
+    save = Mock(side_effect=RuntimeError("database unavailable") if fails else None)
+    monkeypatch.setattr(consumer_module, "save_message_to_database", save)
+    if fails:
+        with pytest.raises(RuntimeError):
+            consumer_module.run()
+        consumer.commit.assert_not_called()
+    else:
+        consumer_module.run()
+        offsets = consumer.commit.call_args.args[0]
+        assert next(iter(offsets.values())).offset == 9
+    consumer.close.assert_called_once()

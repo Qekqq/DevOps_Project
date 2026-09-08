@@ -8,6 +8,11 @@ env/
 
 .git/
 .github/
+.dvc/
+.local-history/
+.codex/
+.agents/
+data/feedback/
 
 __pycache__/
 *.pyc
@@ -25,6 +30,7 @@ logs/
 
 notebooks/
 reports/
+tests/
 
 .DS_Store
 Thumbs.db

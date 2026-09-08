@@ -1,0 +1,23 @@
+name: Restore DVC models
+description: Configure WebDAV credentials and download the locked model release
+inputs:
+  user:
+    description: Yandex account login
+    required: true
+  password:
+    description: Yandex WebDAV application password
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Download model artifacts
+      shell: bash
+      env:
+        DVC_YANDEX_USER: ${{ inputs.user }}
+        DVC_YANDEX_PASSWORD: ${{ inputs.password }}
+      run: |
+        set -euo pipefail
+        trap 'rm -f .dvc/config.local' EXIT
+        python scripts/configure_dvc_yandex.py --from-env
+        python -m dvc pull models
+        python -m src.register_release models/current.json

@@ -96,10 +96,19 @@ class Dataset(Base):
     dataset_name = Column(String(100), nullable=False)
     dataset_version = Column(String(50), nullable=False)
     source_path = Column(String(255))
+    source_sha256 = Column(String(64), unique=True)
+    row_count = Column(Integer)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
     samples = relationship("DatasetSample", back_populates="dataset")
     model_versions = relationship("ModelVersion", back_populates="trained_on_dataset")
+
+
+class RawDatasetSample(Base):
+    __tablename__ = "raw_dataset_samples"
+    dataset_id = Column(BigInteger, ForeignKey("datasets.id", ondelete="RESTRICT"), primary_key=True)
+    row_number = Column(Integer, primary_key=True)
+    sample_values = Column(JSONB, nullable=False)
 
 
 class DatasetSample(Base):
@@ -139,7 +148,9 @@ class ModelVersion(Base):
     model_version = Column(String(50), nullable=False, unique=True)
     artifact_path = Column(String(255), nullable=False)
     artifact_sha256 = Column(String(64), nullable=False)
-    train_medians = Column(JSONB, nullable=False)
+    train_medians = Column(JSONB)
+    artifact_format = Column(String(30), nullable=False, server_default=text("'legacy-v1'"))
+    metadata_json = Column(JSONB)
     preprocessing_version = Column(String(50))
 
     trained_on_dataset_id = Column(

@@ -3,7 +3,8 @@ import time
 from datetime import date
 import re
 
-from kafka import KafkaConsumer
+from kafka import KafkaConsumer, TopicPartition
+from kafka.structs import OffsetAndMetadata
 from kafka.errors import NoBrokersAvailable
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -15,6 +16,7 @@ from src.db.repositories import (
 )
 from src.logger import get_logger
 from src.secrets.vault_client import get_kafka_secrets
+from src.kafka.shadow import predict_challengers
 
 
 logger = get_logger(__name__)
@@ -64,7 +66,8 @@ def create_consumer() -> KafkaConsumer:
                 group_id=kafka_settings["KAFKA_CONSUMER_GROUP"],
                 value_deserializer=lambda value: json.loads(value.decode("utf-8")),
                 auto_offset_reset="earliest",
-                enable_auto_commit=True,
+                enable_auto_commit=False,
+                max_poll_records=1,
             )
 
             logger.info("Kafka consumer connected.")
@@ -84,19 +87,19 @@ def run() -> None:
     logger.info("Starting Kafka consumer service...")
     consumer = create_consumer()
 
-    for record in consumer:
-        message = record.value
-
-        try:
-            save_message_to_database(message)
-            logger.info(
-                "Прогноз из Kafka сохранён в БД (patient=%s).",
-                message.get("patient_code"),
-            )
-        except DuplicatePredictionError:
-            logger.info("Повторный прогноз пропущен (patient=%s).", message.get("patient_code"))
-        except (KeyError, ValueError, RuntimeError, SQLAlchemyError) as error:
-            logger.error("Не удалось сохранить сообщение из Kafka в БД: %s", error)
+    try:
+        for record in consumer:
+            message = record.value
+            try:
+                save_message_to_database(message)
+            except DuplicatePredictionError:
+                logger.info("Повторный прогноз пропущен (patient=%s).", message.get("patient_code"))
+            predict_challengers(message)
+            # Любая другая ошибка прерывает обработку без подтверждения offset.
+            # После перезапуска сообщение будет прочитано снова.
+            consumer.commit({TopicPartition(record.topic, record.partition): OffsetAndMetadata(record.offset + 1, "")})
+    finally:
+        consumer.close()
 
 
 if __name__ == "__main__":

@@ -32,11 +32,3 @@ def get_path(config: ConfigParser, section: str, option: str) -> Path:
     """
     relative_path = config.get(section, option)
     return PROJECT_ROOT / relative_path
-
-
-def get_zero_as_missing_columns(config: ConfigParser) -> list[str]:
-    """
-    Читает список колонок, в которых нулевые значения нужно считать пропусками.
-    """
-    columns = config.get("preprocessing", "zero_as_missing_columns")
-    return [column.strip() for column in columns.split(",")]

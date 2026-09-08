@@ -140,6 +140,8 @@ CREATE TABLE IF NOT EXISTS datasets (
     dataset_name VARCHAR(100) NOT NULL,
     dataset_version VARCHAR(50) NOT NULL,
     source_path VARCHAR(255),
+    source_sha256 VARCHAR(64) UNIQUE,
+    row_count INTEGER,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 
     CONSTRAINT uq_datasets_name_version
@@ -165,6 +167,13 @@ COMMENT ON COLUMN datasets.created_at IS 'Дата и время регистр�
 -- допускаются как zero-as-missing значения.
 -- ============================================================
  
+CREATE TABLE IF NOT EXISTS raw_dataset_samples (
+    dataset_id BIGINT NOT NULL REFERENCES datasets(id) ON DELETE RESTRICT,
+    row_number INTEGER NOT NULL CHECK (row_number >= 0),
+    sample_values JSONB NOT NULL,
+    PRIMARY KEY (dataset_id, row_number)
+);
+
 CREATE TABLE IF NOT EXISTS dataset_samples (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     dataset_id BIGINT NOT NULL REFERENCES datasets(id) ON DELETE CASCADE,
@@ -243,7 +252,9 @@ CREATE TABLE IF NOT EXISTS model_versions (
     model_version VARCHAR(50) NOT NULL UNIQUE,
     artifact_path VARCHAR(255) NOT NULL,
     artifact_sha256 VARCHAR(64) NOT NULL,
-    train_medians JSONB NOT NULL,
+    train_medians JSONB,
+    artifact_format VARCHAR(30) NOT NULL DEFAULT 'legacy-v1',
+    metadata_json JSONB,
     preprocessing_version VARCHAR(50),
     trained_on_dataset_id BIGINT REFERENCES datasets(id) ON DELETE SET NULL,
 
