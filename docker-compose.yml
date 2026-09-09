@@ -129,6 +129,12 @@ services:
     depends_on:
       - prometheus
       - loki
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/grafana/api/health"]
+      interval: 5s
+      timeout: 5s
+      start_period: 30s
+      retries: 24
     mem_limit: 512m
     cpus: 1.0
     restart: unless-stopped

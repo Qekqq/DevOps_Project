@@ -74,6 +74,32 @@ def wait_until(check, message, timeout=120):
     raise RuntimeError(message)
 
 
+def wait_for_vault_health(compose, env):
+    """Ждёт обновления статуса Docker после разблокировки Vault."""
+    container_id = subprocess.check_output(
+        compose + ["ps", "-q", "vault"], cwd=ROOT, env=env, text=True
+    ).strip()
+    if not container_id:
+        raise RuntimeError("Контейнер Vault не запущен.")
+    wait_until(
+        lambda: (
+            subprocess.check_output(
+                [
+                    "docker",
+                    "inspect",
+                    "--format",
+                    "{{.State.Health.Status}}",
+                    container_id,
+                ],
+                env=env,
+                text=True,
+            ).strip()
+            == "healthy"
+        ),
+        "Docker не подтвердил готовность Vault после разблокировки.",
+    )
+
+
 def configure_vault(client, initial):
     if "secret/" not in client.sys.list_mounted_secrets_engines()["data"]:
         client.sys.enable_secrets_engine("kv", path="secret", options={"version": "2"})
@@ -108,6 +134,7 @@ def configure_vault(client, initial):
     )
     if "approle/" not in client.sys.list_auth_methods()["data"]:
         client.sys.enable_auth_method("approle")
+    mount_accessor = client.sys.list_auth_methods()["data"]["approle/"]["accessor"]
     identities = {}
     policy = "\n".join(
         f'path "secret/data/{path}" {{ capabilities = ["read"] }}'
@@ -138,6 +165,10 @@ def configure_vault(client, initial):
         identities[f"{prefix}_VAULT_SECRET_ID"] = (
             client.auth.approle.generate_secret_id(role)["data"]["secret_id"]
         )
+        # Старые контейнеры могли заблокировать роль повторными отказами входа.
+        # Разблокируем только управляемую роль после выдачи нового ключа.
+        role_id = identities[f"{prefix}_VAULT_ROLE_ID"]
+        client.adapter.post(f"/v1/sys/locked-users/{mount_accessor}/unlock/{role_id}")
     return database, identities
 
 
@@ -221,9 +252,12 @@ def main():
         bootstrap = store.read()
     if client.sys.is_sealed():
         client.sys.submit_unseal_key(bootstrap["unseal_key"])
+    wait_for_vault_health(compose, env)
     client.token = bootstrap["root_token"]
     if not client.is_authenticated():
         raise RuntimeError("Не удалось авторизовать настройку Vault.")
+    # Останавливаем обращения со старыми ключами до их отзыва в Vault.
+    run("stop", "diabetes-api", "kafka-consumer", "metrics-exporter")
     database, identities = configure_vault(client, initial)
     env.update({key: database[key] for key in DATABASE_KEYS})
     env.update(identities)
@@ -267,6 +301,9 @@ def main():
         "up",
         "-d",
         "--no-build",
+        "--wait",
+        "--wait-timeout",
+        "180",
         "diabetes-api",
         "kafka-consumer",
         "metrics-exporter",
