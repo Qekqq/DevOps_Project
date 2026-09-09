@@ -16,4 +16,4 @@ test:
 	$(PYTHON) -m pytest tests -v
 
 start:
-	$(PYTHON) -m scripts.start_stack --keepass-db "$(KEEPASS_DB)"
+	$(PYTHON) -m scripts.deploy_release --resume --keepass-db "$(KEEPASS_DB)"

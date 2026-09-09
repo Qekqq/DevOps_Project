@@ -39,7 +39,7 @@ def import_raw_dataset(db, path, name="pima_diabetes"):
             )
         return existing
     dataset = Dataset(
-        dataset_name=name,
+        dataset_name=snapshot.get("name", name) if snapshot else name,
         dataset_version=version,
         source_path=Path(path).as_posix(),
         source_sha256=digest,

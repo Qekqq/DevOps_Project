@@ -5,7 +5,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func, select, true
 from sqlalchemy.orm import Session, joinedload
 
@@ -21,7 +21,11 @@ from src.db.models import (
     User,
 )
 from src.db.repositories import get_study, save_prediction_feedback
-from src.feedback_dataset import read_confirmed_studies, save_snapshot
+from src.feedback_dataset import (
+    read_confirmed_studies,
+    save_snapshot,
+    validate_snapshot_name,
+)
 from src.study_editing import StudyUpdate, update_study
 
 router = APIRouter(prefix="/studies", tags=["Прогнозы"])
@@ -180,8 +184,19 @@ def model_data(model):
     }
 
 
+class SnapshotInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value):
+        return validate_snapshot_name(value)
+
+
 @router.post("/snapshot", summary="Создать снимок исследований с обратной связью")
 def create_snapshot(
+    data: SnapshotInput,
     user: User = Depends(require_admin),
     db: Session = Depends(get_db),
     date_from: date | None = None,
@@ -198,13 +213,14 @@ def create_snapshot(
         get_project_root() / "data" / "feedback",
         date_from=date_from,
         date_to=date_to,
+        name=data.name,
     )
-    import_raw_dataset(db, path, name="confirmed_studies")
+    import_raw_dataset(db, path, name=data.name)
     db.commit()
     return FileResponse(
         path,
         media_type="text/csv",
-        filename=f"feedback-{path.parent.name[:12]}.csv",
+        filename=f"snapshot-{data.name}.csv",
         headers={"Cache-Control": "no-store"},
     )
 
@@ -218,7 +234,7 @@ def study_detail(
     db: Session = Depends(get_db),
 ):
     study = get_study(db, patient_code, study_date)
-    if study is None or (user.role != "admin" and study.created_by != user.id):
+    if study is None:
         raise HTTPException(404, "Исследование не найдено")
     saved = db.scalars(
         select(PredictionHistory)

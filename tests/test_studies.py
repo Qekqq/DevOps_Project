@@ -31,8 +31,10 @@ def setup(monkeypatch):
         yield client, user, study, db
 
 
-def test_user_sees_own_models_but_not_feedback(setup):
-    client, _, _, db = setup
+@pytest.mark.parametrize("author", [1, 2, None])
+def test_user_sees_study_models_regardless_of_author_but_not_feedback(setup, author):
+    client, _, study, db = setup
+    study.created_by = author
     champion = SimpleNamespace(
         id=10, model_name="LR", model_version="lr1", role="champion"
     )
@@ -58,9 +60,9 @@ def test_user_sees_own_models_but_not_feedback(setup):
     db.scalar.assert_not_called()
 
 
-def test_user_cannot_read_another_users_study(setup):
-    client, _, study, _ = setup
-    study.created_by = 2
+def test_missing_study_returns_404(setup, monkeypatch):
+    client, _, _, _ = setup
+    monkeypatch.setattr(studies, "get_study", lambda *args: None)
     assert client.get("/studies/PAT001/2026-09-08").status_code == 404
 
 
@@ -120,13 +122,44 @@ def test_snapshot_uses_dates_and_registers_dataset(setup, monkeypatch, tmp_path)
     monkeypatch.setattr(studies, "read_confirmed_studies", read)
     monkeypatch.setattr(studies, "save_snapshot", save)
     monkeypatch.setattr(studies, "import_raw_dataset", register)
-    response = client.post("/studies/snapshot?date_from=2026-09-01&date_to=2026-09-08")
+    response = client.post(
+        "/studies/snapshot?date_from=2026-09-01&date_to=2026-09-08",
+        json={"name": "  Сентябрь 2026  "},
+    )
     assert response.status_code == 200
     read.assert_called_once_with(
         db, date_from=date(2026, 9, 1), date_to=date(2026, 9, 8)
     )
-    register.assert_called_once_with(db, path, name="confirmed_studies")
+    register.assert_called_once_with(db, path, name="Сентябрь 2026")
+    assert save.call_args.kwargs["name"] == "Сентябрь 2026"
+    from urllib.parse import unquote
+
+    assert "snapshot-Сентябрь 2026.csv" in unquote(
+        response.headers["content-disposition"]
+    )
     assert response.text == "outcome\n0\n"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"name": ""},
+        {"name": "   "},
+        {"name": "x" * 101},
+        {"name": "../abc"},
+        {"name": "a\nb"},
+        {"name": 123},
+    ],
+)
+def test_snapshot_rejects_invalid_name_without_writing(setup, monkeypatch, body):
+    client, user, _, db = setup
+    user.role = "admin"
+    save = MagicMock()
+    monkeypatch.setattr(studies, "save_snapshot", save)
+    assert client.post("/studies/snapshot", json=body).status_code == 422
+    save.assert_not_called()
+    db.commit.assert_not_called()
 
 
 def test_admin_saves_feedback_with_actor(setup, monkeypatch):

@@ -4,64 +4,136 @@ on:
   workflow_run:
     workflows: [CI]
     types: [completed]
-    branches: [develop, main]
+    branches: [main]
   workflow_dispatch:
+    inputs:
+      ci_run_id:
+        description: ID успешного запуска CI для текущего main
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: production-deployment
+  cancel-in-progress: false
 
 jobs:
-  compose-functional-tests:
-    name: Проверки приложения в Docker Compose
-    # Образы публикуются после push или ручного CI; сборки запросов на слияние не подходят.
+  verify-release:
+    name: Проверка выпуска на временном окружении
     if: >-
-      (github.event_name == 'workflow_dispatch' &&
-       (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main')) ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
       (github.event_name == 'workflow_run' &&
        github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.head_repository.full_name == github.repository &&
-       (github.event.workflow_run.event == 'push' ||
-        github.event.workflow_run.event == 'workflow_dispatch'))
+       github.event.workflow_run.head_branch == 'main' &&
+       (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch'))
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    env:
-      # При workflow_run SHA берём из завершённого CI, а не из основной ветки.
-      IMAGE_TAG: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
-      IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/devops_project
-      COMPOSE_DISABLE_ENV_FILE: "1"
+    timeout-minutes: 30
+    outputs:
+      sha: ${{ steps.release.outputs.sha }}
+      run_id: ${{ steps.release.outputs.run_id }}
     steps:
+      - name: Проверка происхождения выпуска и текущего main
+        id: release
+        uses: actions/github-script@v7
+        env:
+          REQUESTED_RUN_ID: ${{ github.event.workflow_run.id || inputs.ci_run_id }}
+        with:
+          script: |
+            const runId = Number(process.env.REQUESTED_RUN_ID);
+            if (!Number.isSafeInteger(runId) || runId <= 0) throw new Error('Некорректный ID запуска CI');
+            const {data: run} = await github.rest.actions.getWorkflowRun({...context.repo, run_id: runId});
+            const {data: branch} = await github.rest.repos.getBranch({...context.repo, branch: 'main'});
+            if (run.path !== '.github/workflows/ci.yml' || run.conclusion !== 'success' ||
+                run.head_branch !== 'main' || run.head_repository.full_name !== `${context.repo.owner}/${context.repo.repo}` ||
+                !['push', 'workflow_dispatch'].includes(run.event) || run.head_sha !== branch.commit.sha) {
+              throw new Error('Выкладывается только успешный CI текущего main');
+            }
+            core.setOutput('sha', run.head_sha);
+            core.setOutput('run_id', String(runId));
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.IMAGE_TAG }}
+          ref: ${{ steps.release.outputs.sha }}
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-      - name: Установка зависимостей запуска
-        run: python -m pip install hvac==2.4.0 pytest==9.0.3
+          python-version: '3.11'
+      - run: python -m pip install hvac==2.4.0 requests==2.34.2 pytest==9.0.3
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-${{ steps.release.outputs.sha }}
+          path: release
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.release.outputs.run_id }}
+      - name: Проверка пакета
+        env:
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+          CI_RUN_ID: ${{ steps.release.outputs.run_id }}
+        run: |
+          python -c 'import os; from scripts.deploy_release import read_release; read_release("release", os.environ["RELEASE_SHA"], os.environ["CI_RUN_ID"])'
       - uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - name: Выбор образа проверенного коммита
-        run: |
-          cat > docker-compose.override.yml <<'YAML'
-          services:
-            diabetes-api:
-              image: ${IMAGE_NAME}:${IMAGE_TAG}
-            kafka-consumer:
-              image: ${IMAGE_NAME}:${IMAGE_TAG}
-            metrics-exporter:
-              image: ${IMAGE_NAME}:${IMAGE_TAG}
-          YAML
-          docker compose pull diabetes-api kafka-consumer metrics-exporter
-      - name: Запуск отдельного стенда и интеграционные проверки
-        run: >-
-          python -m scripts.start_stack --ci --no-build --check
-          --compose-file docker-compose.override.yml
+      - name: Получение проверенных образов
+        run: docker compose -f release/docker-compose.json pull
+      - name: Запуск и интеграционные проверки
+        run: python -m scripts.start_stack --ci --no-build --check --release-dir release
       - name: Диагностика сервисов
         if: failure()
         run: |
-          docker compose ps -a
-          docker compose logs --tail=100 diabetes-api kafka-consumer metrics-exporter frontend grafana prometheus alloy loki vault
-      - name: Удаление одноразового тестового стенда
+          docker compose -f release/docker-compose.json ps -a
+          docker compose -f release/docker-compose.json logs --tail=100 diabetes-api kafka-consumer metrics-exporter frontend
+      - name: Удаление только одноразового тестового окружения
         if: always()
-        run: docker compose down -v
+        run: |
+          if [ -f release/docker-compose.json ]; then
+            docker compose -f release/docker-compose.json down -v
+          fi
+
+  deploy:
+    name: Обновление постоянного приложения
+    needs: verify-release
+    runs-on: [self-hosted, Windows, X64, devops-production]
+    timeout-minutes: 20
+    environment: production
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - name: Проверка актуальности main перед выкладкой
+        uses: actions/github-script@v7
+        env:
+          RELEASE_SHA: ${{ needs.verify-release.outputs.sha }}
+        with:
+          script: |
+            const {data: branch} = await github.rest.repos.getBranch({...context.repo, branch: 'main'});
+            if (branch.commit.sha !== process.env.RELEASE_SHA) throw new Error('main уже изменился; устаревшая выкладка остановлена');
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.verify-release.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-${{ needs.verify-release.outputs.sha }}
+          path: release
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.verify-release.outputs.run_id }}
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Выкладка без локальной сборки
+        env:
+          RELEASE_SHA: ${{ needs.verify-release.outputs.sha }}
+          CI_RUN_ID: ${{ needs.verify-release.outputs.run_id }}
+        run: |
+          if (-not $env:DEVOPS_DEPLOY_HOME) { throw 'Runner не настроен: отсутствует DEVOPS_DEPLOY_HOME' }
+          python -m scripts.deploy_release --release release --commit $env:RELEASE_SHA --ci-run $env:CI_RUN_ID
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -1,6 +1,7 @@
 """Снимки подтверждённых исследований и разбиение по пациентам."""
 
 import json
+import re
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
@@ -13,6 +14,29 @@ from sqlalchemy import select
 from src.datasets import read_raw_dataset
 from src.db.models import PredictionFeedback, Study
 from src.features import FEATURE_COLUMNS
+
+
+def validate_snapshot_name(value):
+    if not isinstance(value, str):
+        raise ValueError("Введите название снимка")
+    value = value.strip()
+    if not 1 <= len(value) <= 100:
+        raise ValueError("Название снимка должно содержать от 1 до 100 символов")
+    if re.search(r'[<>:"/\\|?*\x00-\x1f\x7f]', value):
+        raise ValueError(
+            'Название не должно содержать символы <>:"/\\|?* и переносы строк'
+        )
+    return value
+
+
+def snapshot_identity(content, lineage, filters, name=None):
+    # Старые безымянные снимки сохраняют прежние идентификаторы.
+    identity = dict(filters)
+    if name is not None:
+        identity["name"] = validate_snapshot_name(name)
+    return sha256(
+        content + lineage + json.dumps(identity, sort_keys=True).encode("utf-8")
+    ).hexdigest()
 
 
 def read_confirmed_studies(db, *, date_from=None, date_to=None):
@@ -44,7 +68,9 @@ def read_confirmed_studies(db, *, date_from=None, date_to=None):
     )
 
 
-def save_snapshot(frame, directory, *, date_from=None, date_to=None):
+def save_snapshot(frame, directory, *, date_from=None, date_to=None, name=None):
+    if name is not None:
+        name = validate_snapshot_name(name)
     if date_from is not None and date_to is not None and date_from > date_to:
         raise ValueError("Начало периода не может быть позже окончания")
     if frame.empty:
@@ -74,10 +100,9 @@ def save_snapshot(frame, directory, *, date_from=None, date_to=None):
         "date_from": date_from.isoformat() if date_from else None,
         "date_to": date_to.isoformat() if date_to else None,
     }
-    filter_bytes = json.dumps(filters, sort_keys=True).encode("utf-8")
     directory = Path(directory).resolve()
     directory.mkdir(parents=True, exist_ok=True)
-    folder = directory / sha256(content + lineage + filter_bytes).hexdigest()
+    folder = directory / snapshot_identity(content, lineage, filters, name)
     path = folder / "data.csv"
     if folder.exists():
         load_snapshot(path)
@@ -97,6 +122,8 @@ def save_snapshot(frame, directory, *, date_from=None, date_to=None):
         "target": "outcome",
         "filters": filters,
     }
+    if name is not None:
+        metadata["name"] = name
     # Публикуем каталог целиком: сбой записи не оставляет видимый неполный снимок.
     with TemporaryDirectory(prefix=".snapshot-", dir=directory) as temporary:
         staging = Path(temporary) / "snapshot"
@@ -143,11 +170,9 @@ def load_snapshot(path):
         or metadata["target"] != "outcome"
     ):
         raise ValueError("Метаданные снимка не соответствуют его строкам")
-    expected = sha256(
-        path.read_bytes()
-        + lineage_bytes
-        + json.dumps(metadata["filters"], sort_keys=True).encode("utf-8")
-    ).hexdigest()
+    expected = snapshot_identity(
+        path.read_bytes(), lineage_bytes, metadata["filters"], metadata.get("name")
+    )
     if path.parent.name != expected:
         raise ValueError("Идентификатор снимка не соответствует данным и фильтру")
     return pd.concat(

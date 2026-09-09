@@ -16,11 +16,13 @@ from src.db.models import (
     Study,
     User,
 )
+from src.model_health import month_window, read_model_health
+from src.model_health_history import read_model_health_history
 from src.monitoring import read_quality_snapshot
 from src.passwords import hash_password
 
 
-def test_quality_uses_same_labeled_cohort_for_all_models():
+def test_quality_uses_each_models_own_labeled_predictions():
     with get_session_factory()() as db:
         try:
             before = read_quality_snapshot(db)
@@ -65,11 +67,143 @@ def test_quality_uses_same_labeled_cohort_for_all_models():
             after = read_quality_snapshot(db)
             assert after["studies"] == before["studies"] + 3
             assert after["feedback"] == before["feedback"] + 2
-            assert after["cohort"] == before["cohort"] + 1
+            assert after["cohort"] == before["cohort"] + 2
             for index, model in enumerate(after["models"]):
                 counts = dict(before["models"][index]["counts"])
-                counts["fn" if index == 0 else "tp"] += 1
+                counts["fn" if index == 0 else "tp"] += 2 if index == 0 else 1
                 assert model["counts"] == counts
+        finally:
+            db.rollback()
+
+
+def test_monthly_model_health_uses_study_dates_and_counts_inputs_once():
+    today = date(2026, 9, 9)
+    start, end = month_window(today)
+    with get_session_factory()() as db:
+        try:
+            before = read_model_health(db, today)
+            # Начало включено, конец исключён; нет прогнозов и обратной связи.
+            for index, study_date in enumerate([start, today, end]):
+                db.add(
+                    Study(
+                        patient_code=f"DMT{index:03d}",
+                        study_date=study_date,
+                        features=dict(
+                            pregnancies=0,
+                            glucose=0,
+                            blood_pressure=70,
+                            skin_thickness=20,
+                            insulin=0,
+                            bmi=30,
+                            diabetes_pedigree_function=0.5,
+                            age=40,
+                        ),
+                    )
+                )
+            db.flush()
+            after = read_model_health(db, today)
+            assert after["quality"]["samples"] == before["quality"]["samples"] + 2
+            assert (
+                after["quality"]["glucose_zeros"]
+                == before["quality"]["glucose_zeros"] + 2
+            )
+            assert after["quality"]["glucose_missing"] == 0
+            assert after["labeled"] == before["labeled"]
+            assert after["evaluated"] == before["evaluated"]
+        finally:
+            db.rollback()
+
+
+def test_model_history_groups_study_dates_and_recalculates_monthly_quality():
+    """Поздно внесённые исследования попадают в свои дни, не в дату импорта."""
+    with get_session_factory()() as db:
+        try:
+            models = db.scalars(
+                select(ModelVersion)
+                .where(ModelVersion.role.in_(["champion", "challenger"]))
+                .order_by((ModelVersion.role == "champion").desc(), ModelVersion.id)
+            ).all()
+            for index, (study_date, prediction) in enumerate(
+                [
+                    (date(2001, 3, 29), 1),
+                    (date(2001, 3, 30), 1),
+                    (date(2001, 3, 31), 0),
+                    (date(2001, 3, 31), 0),
+                    (date(2001, 4, 1), 1),
+                    (date(2001, 4, 3), 1),
+                ]
+            ):
+                study = Study(
+                    patient_code=f"HMT{index:03d}",
+                    study_date=study_date,
+                    features=dict(
+                        pregnancies=0,
+                        glucose=0,
+                        blood_pressure=70,
+                        skin_thickness=20,
+                        insulin=0,
+                        bmi=30,
+                        diabetes_pedigree_function=0.5,
+                        age=40,
+                    ),
+                )
+                db.add(study)
+                db.flush()
+                db.add(PredictionFeedback(study_id=study.id, true_label=1))
+                for model in models:
+                    db.add(
+                        PredictionHistory(
+                            study_id=study.id,
+                            model_version_id=model.id,
+                            role_at_prediction=model.role,
+                            prediction=prediction,
+                            probability=float(prediction),
+                        )
+                    )
+            db.flush()
+            filters = dict(date_from=date(2001, 3, 30), date_to=date(2001, 4, 2))
+            daily = read_model_health_history(db, **filters)
+            monthly = read_model_health_history(db, group_by="month", **filters)
+            selected = read_model_health_history(
+                db, model_version=models[1].model_version, **filters
+            )
+            assert len(daily["models"]) == len(models)
+            assert len(selected["models"]) == 1
+            assert selected["models"][0] == daily["models"][1]
+            for day_model, month_model in zip(daily["models"], monthly["models"]):
+                assert day_model["summary"] == month_model["summary"]
+                total = day_model["summary"]
+                assert total["data_quality"]["samples"] == 4
+                assert total["data_quality"]["missing_total"] == 8
+                assert total["prediction_quality"]["metrics"]["accuracy"] == 0.5
+                assert total["prediction_quality"]["confusion_matrix"] == {
+                    "tp": 2,
+                    "tn": 0,
+                    "fp": 0,
+                    "fn": 2,
+                }
+                assert [p["data_quality"]["samples"] for p in day_model["points"]] == [
+                    1,
+                    2,
+                    1,
+                    0,
+                ]
+                assert [
+                    p["prediction_quality"]["metrics"]["accuracy"]
+                    for p in day_model["points"]
+                ] == [1, 0, 1, None]
+                # Март: 1 верный из 3, а не среднее дневных Accuracy (1+0)/2.
+                assert (
+                    month_model["points"][0]["prediction_quality"]["metrics"][
+                        "accuracy"
+                    ]
+                    == 1 / 3
+                )
+                assert all(
+                    p["data_drift"]["psi"]["glucose"] is None
+                    for p in day_model["points"]
+                )
+                assert day_model["points"][-1]["data_quality"]["missing_total"] is None
         finally:
             db.rollback()
 

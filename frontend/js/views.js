@@ -139,9 +139,11 @@ export function newStudy(state) {
                 maxlength="6"
                 required
                 autocomplete="off"
+                aria-describedby="patient-format patient-error"
                 style="text-transform:uppercase"
               />
-              <small>3 латинские буквы и 3 цифры</small>
+              <small id="patient-format">Сначала 3 латинские буквы, затем 3 цифры</small>
+              <small id="patient-error" class="field-error" aria-live="polite"></small>
             </div>
             <div class="field">
               <label for="date">
@@ -149,7 +151,7 @@ export function newStudy(state) {
                 <span class="required">*</span>
               </label>
               <input id="date" name="date" type="date" value="${today()}" required />
-              <small>Одно исследование в день</small>
+              <small>Для одного пациента — не более одного исследования в день</small>
             </div>
           </div>
           <div class="divider"></div>

@@ -9,6 +9,7 @@ from prometheus_client.core import GaugeMetricFamily
 from sqlalchemy import text
 
 from src.db.database import get_session_factory
+from src.model_health_exporter import ModelHealthCollector
 from src.monitoring import read_quality_snapshot
 from src.telemetry import ContainerCollector, event
 
@@ -55,7 +56,7 @@ class QualityCollector:
         descriptions = {
             "studies": "Количество исследований",
             "feedback": "Количество исследований с фактическим исходом",
-            "cohort": "Количество исследований в общей выборке оценки активных моделей",
+            "cohort": "Количество исследований с фактом и прогнозом хотя бы одной активной модели",
         }
         for name, description in descriptions.items():
             yield GaugeMetricFamily(
@@ -104,6 +105,7 @@ class QualityCollector:
 def main():
     registry = CollectorRegistry()
     registry.register(QualityCollector())
+    registry.register(ModelHealthCollector())
     registry.register(ContainerCollector())
     start_http_server(9100, registry=registry)
     threading.Event().wait()
