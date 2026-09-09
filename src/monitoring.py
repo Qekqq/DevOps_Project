@@ -1,11 +1,16 @@
 """Качество активных моделей на общей выборке с фактическим исходом."""
 
+from datetime import date, timedelta
+from typing import Literal
+
 import numpy as np
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sklearn.metrics import classification_report
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import SQLAlchemyError
 
 from src.auth import require_admin
+from src.db.database import get_session_factory
 from src.db.models import (
     ModelVersion,
     PredictionFeedback,
@@ -13,6 +18,8 @@ from src.db.models import (
     Study,
     User,
 )
+from src.model_health import month_window
+from src.model_health_history import period_buckets, read_model_health_history
 
 router = APIRouter(prefix="/monitoring", tags=["Мониторинг"])
 
@@ -43,6 +50,49 @@ def quality_report(tp, fn, fp, tn):
 def monitoring_access(user: User = Depends(require_admin)):
     """Nginx проверяет текущую сессию перед каждым обращением к Grafana."""
     return Response(status_code=204, headers={"X-Monitoring-User": f"user-{user.id}"})
+
+
+@router.get("/model-health", summary="Метрики моделей за период и их динамика")
+def model_health_history(
+    response: Response,
+    user: User = Depends(require_admin),
+    date_from: date | None = None,
+    date_to: date | None = None,
+    group_by: Literal["day", "month"] = "day",
+    model_version: str | None = Query(default=None, min_length=1, max_length=50),
+):
+    if date_from is None and date_to is None:
+        date_from, end = month_window()
+        date_to = end - timedelta(days=1)
+    elif date_from is None or date_to is None:
+        raise HTTPException(422, "Укажите начало и окончание периода")
+    try:
+        period_buckets(date_from, date_to, group_by)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        # Отдельная сессия: авторизация уже читала БД в своей транзакции.
+        with get_session_factory()() as db:
+            db.execute(
+                text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            )
+            db.execute(text("SET LOCAL statement_timeout = '5s'"))
+            return read_model_health_history(
+                db,
+                date_from=date_from,
+                date_to=date_to,
+                group_by=group_by,
+                model_version=model_version,
+            )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from None
+    except TimeoutError as exc:
+        raise HTTPException(503, str(exc)) from None
+    except (SQLAlchemyError, ValueError):
+        raise HTTPException(
+            503, "Не удалось рассчитать метрики; проверьте БД и обучающий эталон модели"
+        ) from None
 
 
 def read_quality_snapshot(db):

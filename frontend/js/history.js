@@ -8,6 +8,34 @@ import {
   feedbackBadge,
 } from './ui.js';
 
+export function snapshotDialog() {
+  return html`
+    <dialog class="modal" id="snapshot-modal" aria-labelledby="snapshot-title">
+      <div class="modal-head">
+        <h2 id="snapshot-title">Создать снимок данных</h2>
+        <button class="icon-btn" type="button" data-action="close-snapshot" aria-label="Закрыть">
+          ${icon('close')}
+        </button>
+      </div>
+      <form id="snapshot-form" class="modal-body">
+        <p id="snapshot-period"></p>
+        <div class="field">
+          <label for="snapshot-name">Название снимка <span class="required">*</span></label>
+          <input id="snapshot-name" name="name" required maxlength="100"
+            placeholder="Например: Исследования за сентябрь 2026"
+            aria-describedby="snapshot-name-hint" autocomplete="off" autofocus />
+          <small id="snapshot-name-hint">От 1 до 100 символов. Название сохранится в базе данных.</small>
+        </div>
+        <div id="snapshot-error" class="inline-error hidden" role="alert"></div>
+        <div class="modal-actions">
+          <button class="button" type="button" data-action="close-snapshot">Отмена</button>
+          <button class="button primary" type="submit">Создать и скачать</button>
+        </div>
+      </form>
+    </dialog>
+  `;
+}
+
 export function historyView(filters) {
   return html`
     <div class="page-title">

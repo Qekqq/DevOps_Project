@@ -40,3 +40,6 @@ logs/
 /.local-history/
 /backups/
 /data/feedback/
+
+# Временные выгрузки ретроспективных метрик (создаются export_model_history.py)
+/reports/demo-model-history-*.csv

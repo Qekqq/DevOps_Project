@@ -1,7 +1,8 @@
 import { html, icon } from './ui.js';
 
 // UID сохраняется при переименовании дашборда в Grafana.
-const operationsDashboard = '/grafana/d/fastapi-observability/backend';
+const operationsDashboard =
+  '/grafana/d/fastapi-observability/backend?from=now-24h&to=now';
 
 export function monitoring() {
   return html`
@@ -33,7 +34,7 @@ export function monitoring() {
       id="operations-dashboard"
       class="monitoring-dashboard monitoring-operations"
       title="Работа приложения"
-      src="${operationsDashboard}?kiosk&refresh=30s"
+      src="${operationsDashboard}&kiosk&hideLogo=true&refresh=30s"
     ></iframe>
   `;
 }

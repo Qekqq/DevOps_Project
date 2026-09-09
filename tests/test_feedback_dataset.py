@@ -40,6 +40,42 @@ def test_snapshot_metadata_tampering_is_rejected(tmp_path):
         save_snapshot(frame, tmp_path)
 
 
+def test_named_snapshots_preserve_names_and_identity(tmp_path):
+    from src.db.load_raw_dataset import import_raw_dataset
+
+    frame = pd.DataFrame(
+        [
+            {
+                "study_id": 15,
+                "patient_code": "PAT015",
+                "study_date": "2026-09-08",
+                **{key: 1 for key in FEATURE_COLUMNS},
+                "outcome": 0,
+            }
+        ]
+    )
+    first = save_snapshot(frame, tmp_path, name="  Проверка сентября  ")
+    again = save_snapshot(frame, tmp_path, name="Проверка сентября")
+    second = save_snapshot(frame, tmp_path, name="Контрольный снимок")
+    assert first == again
+    assert first != second
+    assert first.read_bytes() == second.read_bytes()
+    assert load_snapshot(first)[1]["name"] == "Проверка сентября"
+    assert load_snapshot(second)[1]["name"] == "Контрольный снимок"
+    # При регистрации выпуска имя должно браться из самого снимка.
+    db = Mock()
+    db.execute.return_value.scalar_one_or_none.return_value = None
+    dataset = import_raw_dataset(db, first)
+    assert dataset.dataset_name == "Проверка сентября"
+    assert db.add_all.call_args.args[0][0].source_study_id == 15
+    metadata_path = first.parent / "dataset.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["name"] = "Подменённое название"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    with pytest.raises(ValueError, match="Идентификатор снимка"):
+        load_snapshot(first)
+
+
 def test_snapshot_date_filter_includes_boundaries_and_negative_feedback(tmp_path):
     engine = create_engine("sqlite://")
     with engine.begin() as connection:

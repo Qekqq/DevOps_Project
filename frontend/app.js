@@ -5,9 +5,15 @@ import {
   historyQuery,
   snapshotQuery,
 } from './js/api.js';
-import { html, icon, escape, brand, fields, sample, today } from './js/ui.js';
+import { html, icon, escape, brand, fields, sample } from './js/ui.js';
 import { login, newStudy, resultCard } from './js/views.js';
-import { historyView, historyStats, historyTable, modelFilter } from './js/history.js';
+import {
+  historyView,
+  historyStats,
+  historyTable,
+  modelFilter,
+  snapshotDialog,
+} from './js/history.js';
 import { studyCard, predictionRows } from './js/study-card.js';
 import { monitoring } from './js/monitoring.js';
 
@@ -147,6 +153,7 @@ function shell(content) {
       <div class="content">${content}</div>
     </main>
     <dialog class="modal" id="detail-modal" aria-labelledby="modal-title"></dialog>
+    ${admin ? snapshotDialog() : ''}
   `;
 }
 
@@ -398,26 +405,57 @@ async function submitFeedback(form) {
   }
 }
 
-async function downloadSnapshot(button) {
-  button.disabled = true;
+function openSnapshot() {
+  const dialog = document.querySelector('#snapshot-modal');
+  const form = dialog.querySelector('form');
+  form.reset();
+  form.elements.name.setCustomValidity('');
+  dialog.querySelector('#snapshot-error').classList.add('hidden');
+  dialog.dataset.query = snapshotQuery(state.filters).toString();
+  dialog.querySelector('#snapshot-period').textContent =
+    `Исследования с обратной связью. Период: ${state.filters.from || 'с начала истории'} — ${state.filters.to || 'по последнюю дату'}.`;
+  dialog.oncancel = (event) => {
+    if (form.dataset.saving) event.preventDefault();
+  };
+  dialog.showModal();
+}
+
+async function downloadSnapshot(form) {
+  if (form.dataset.saving) return;
+  const input = form.elements.name;
+  const name = input.value.trim();
+  const invalid = !name || name.length > 100 || /[<>:"/\\|?*\x00-\x1f\x7f]/.test(name);
+  input.setCustomValidity(invalid ? 'Введите название от 1 до 100 символов без <>:"/\\|?* и переносов строк.' : '');
+  if (!form.reportValidity()) return;
+  const dialog = form.closest('dialog');
+  const button = form.querySelector('[type="submit"]');
+  const controls = dialog.querySelectorAll('button, input');
+  form.dataset.saving = 'true';
+  controls.forEach((control) => { control.disabled = true; });
+  button.textContent = 'Создаём снимок…';
+  dialog.querySelector('#snapshot-error').classList.add('hidden');
   const currentGeneration = generation;
   try {
-    const blob = await request('/studies/snapshot?' + snapshotQuery(state.filters), {
+    const blob = await request('/studies/snapshot?' + dialog.dataset.query, {
       method: 'POST',
+      body: { name },
       download: true,
     });
     if (currentGeneration !== generation) return;
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `feedback-${today()}.csv`;
+    link.download = `snapshot-${name}.csv`;
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+    dialog.close();
     toast('Снимок сохранён и зарегистрирован для обучения');
   } catch (error) {
-    toast(error.message);
+    if (dialog.isConnected) showError('#snapshot-error', error);
   } finally {
-    button.disabled = false;
+    delete form.dataset.saving;
+    controls.forEach((control) => { control.disabled = false; });
+    button.textContent = 'Создать и скачать';
   }
 }
 
@@ -437,7 +475,8 @@ const actions = {
   'refresh-card': () => refreshCard(),
   page: (button) => loadHistory(Number(button.dataset.page)),
   'retry-history': () => loadHistory(state.history?.page || 1),
-  snapshot: downloadSnapshot,
+  snapshot: openSnapshot,
+  'close-snapshot': () => document.querySelector('#snapshot-modal').close(),
   'reset-filters': () => {
     state.filters = defaultFilters();
     render();
@@ -484,6 +523,7 @@ app.addEventListener('submit', (event) => {
     'login-form': submitLogin,
     'study-form': submitPrediction,
     'feedback-form': submitFeedback,
+    'snapshot-form': downloadSnapshot,
   };
   if (event.target.id === 'history-filters') {
     clearTimeout(searchTimer);
@@ -494,6 +534,7 @@ app.addEventListener('submit', (event) => {
 });
 
 app.addEventListener('input', (event) => {
+  if (event.target.id === 'snapshot-name') event.target.setCustomValidity('');
   if (event.target.form?.id === 'feedback-form' && event.target.type === 'number')
     validateField(event.target);
   if (event.target.form?.id === 'study-form') {
@@ -505,6 +546,18 @@ app.addEventListener('input', (event) => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => loadHistory(1), 300);
 });
+
+app.addEventListener('focusout', (event) => {
+  if (event.target.id === 'patient') validateField(event.target, true);
+});
+
+app.addEventListener(
+  'invalid',
+  (event) => {
+    if (event.target.form?.id === 'study-form') validateField(event.target, true);
+  },
+  true,
+);
 
 app.addEventListener('change', (event) => {
   if (event.target.form?.id === 'history-filters') {
@@ -528,7 +581,20 @@ async function start() {
 configureSession(null, endSession);
 start();
 
-function validateField(input) {
+function validateField(input, complete = false) {
+  if (input.name === 'patient') {
+    const value = input.value;
+    const validPrefix = /^(?:[A-Za-z]{0,3}|[A-Za-z]{3}[0-9]{0,3})$/.test(value);
+    const validCode = /^[A-Za-z]{3}[0-9]{3}$/.test(value);
+    const message =
+      'Формат кода пациента - сначала строго 3 латинские буквы, затем 3 цифры, без пробелов.';
+    // Полный формат обязателен при отправке; правильный незавершённый ввод не ругаем.
+    input.setCustomValidity(value === '' || validCode ? '' : message);
+    const invalid = complete === true ? !validCode : !validPrefix;
+    input.setAttribute('aria-invalid', String(invalid));
+    document.getElementById('patient-error').textContent = invalid ? message : '';
+    return;
+  }
   if (input.name === 'diabetes_pedigree_function') {
     input.setCustomValidity(
       input.value !== '' && Number(input.value) <= 0
