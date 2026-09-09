@@ -234,30 +234,8 @@ def read_model_health(
         .join(PredictionFeedback, PredictionFeedback.study_id == Study.id)
         .where(fresh)
     ).one()
-    # Сравнение качества всех активных моделей на одной размеченной выборке.
-    active_ids = select(ModelVersion.id).where(
-        ModelVersion.role.in_(["champion", "challenger"])
-    )
-    active_count = db.scalar(
-        select(func.count())
-        .select_from(ModelVersion)
-        .where(ModelVersion.role.in_(["champion", "challenger"]))
-    )
-    complete = (
-        select(PredictionHistory.study_id)
-        .where(PredictionHistory.model_version_id.in_(active_ids))
-        .group_by(PredictionHistory.study_id)
-        .having(func.count() == active_count)
-    )
-    active_datasets = (
-        select(TrainingRun.dataset_id)
-        .join(ModelVersion, ModelVersion.training_run_id == TrainingRun.id)
-        .where(ModelVersion.role.in_(["champion", "challenger"]))
-    )
-    used_studies = select(RawDatasetSample.source_study_id).where(
-        RawDatasetSample.dataset_id.in_(active_datasets),
-        RawDatasetSample.source_study_id.is_not(None),
-    )
+    # Каждая версия оценивается по собственным прогнозам с фактическим исходом.
+    # Исключаем снимок этой версии, а не обучающие данные других моделей.
     counts = dict(
         db.execute(
             select(
@@ -282,9 +260,7 @@ def read_model_health(
             .join(PredictionFeedback, PredictionFeedback.study_id == Study.id)
             .join(PredictionHistory, PredictionHistory.study_id == Study.id)
             .where(
-                window,
-                Study.id.in_(complete),
-                Study.id.not_in(used_studies),
+                fresh,
                 PredictionHistory.model_version_id == model_id,
             )
         )

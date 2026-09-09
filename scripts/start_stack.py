@@ -16,6 +16,7 @@ import requests
 
 ROOT = Path(__file__).resolve().parents[1]
 DATABASE_KEYS = ("POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD")
+KEEPASS_PATH_FILE = ROOT / ".local-history" / "keepass-path.txt"
 
 
 class KeePassCredentials:
@@ -181,6 +182,7 @@ def main():
     )
     parser.add_argument(
         "--keepass-db",
+        default=os.getenv("KEEPASS_DB"),
         help="Файл KeePassXC .kdbx; мастер-пароль запрашивается скрытым вводом",
     )
     parser.add_argument(
@@ -189,6 +191,14 @@ def main():
     )
     parser.add_argument("--project", default="devops_project")
     parser.add_argument("--compose-file", action="append", default=[])
+    parser.add_argument(
+        "--release-dir", type=Path, help="Проверенный пакет образов для CI"
+    )
+    parser.add_argument(
+        "--local-build",
+        action="store_true",
+        help="Явно разрешить сборку локального кода вместо выкладки",
+    )
     parser.add_argument("--vault-url", default="http://127.0.0.1:8201")
     parser.add_argument("--api-url", default="http://127.0.0.1:8001")
     parser.add_argument(
@@ -200,15 +210,40 @@ def main():
         "--check", action="store_true", help="Интеграционные проверки на чистом стенде"
     )
     args = parser.parse_args()
+    if not args.ci and not args.local_build:
+        parser.error(
+            "Для запуска существующей версии используйте .\\start. Локальная сборка требует --local-build"
+        )
+    if args.release_dir and not args.ci:
+        parser.error(
+            "Пакет для постоянного приложения запускается через scripts.deploy_release"
+        )
+    if args.release_dir:
+        from scripts.deploy_release import read_release
+
+        read_release(args.release_dir)
+        args.no_build = True
     if args.check and not args.ci:
         parser.error("--check разрешён только с --ci на одноразовом стенде")
     if not args.ci and not args.keepass_db:
-        parser.error("Укажите --keepass-db с путём к базе KeePassXC")
+        if KEEPASS_PATH_FILE.is_file():
+            args.keepass_db = KEEPASS_PATH_FILE.read_text(encoding="utf-8").strip()
+        if not args.keepass_db or not Path(args.keepass_db).is_file():
+            if not sys.stdin.isatty():
+                parser.error("Укажите --keepass-db с путём к базе KeePassXC")
+            args.keepass_db = input("Путь к файлу KeePassXC .kdbx: ").strip().strip('"')
+        if not args.keepass_db or not Path(args.keepass_db).is_file():
+            parser.error("Файл KeePassXC не найден. Проверьте путь к .kdbx")
     initial = {}
     env = dict(os.environ, COMPOSE_DISABLE_ENV_FILE="1")
     for key in ("VAULT_TOKEN", "VAULT_UNSEAL_KEY"):
         env.pop(key, None)
-    compose = ["docker", "compose", "-p", args.project, "-f", "docker-compose.yml"]
+    compose_file = (
+        str(args.release_dir.resolve() / "docker-compose.json")
+        if args.release_dir
+        else "docker-compose.yml"
+    )
+    compose = ["docker", "compose", "-p", args.project, "-f", compose_file]
     for path in args.compose_file:
         compose += ["-f", path]
 
@@ -220,9 +255,15 @@ def main():
         if args.ci
         else KeePassCredentials(args.keepass_db, args.project, args.keepass_key_file)
     )
+    if store:
+        # Запоминаем только путь после успешного открытия KeePass. Пароль и
+        # ключи сюда не записываются; .local-history исключена из Git и образа.
+        KEEPASS_PATH_FILE.parent.mkdir(parents=True, exist_ok=True)
+        KEEPASS_PATH_FILE.write_text(store.database, encoding="utf-8")
     if not args.no_build:
         run("build", "diabetes-api", "kafka-consumer", "metrics-exporter")
-    run("build", "frontend")
+    if not args.release_dir:
+        run("build", "frontend")
     run("up", "-d", "vault")
     client = hvac.Client(url=args.vault_url, timeout=10)
     wait_until(lambda: client.sys.read_seal_status() is not None, "Vault не отвечает")

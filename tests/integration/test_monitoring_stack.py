@@ -22,7 +22,7 @@ from src.monitoring import read_quality_snapshot
 from src.passwords import hash_password
 
 
-def test_quality_uses_same_labeled_cohort_for_all_models():
+def test_quality_uses_each_models_own_labeled_predictions():
     with get_session_factory()() as db:
         try:
             before = read_quality_snapshot(db)
@@ -67,10 +67,10 @@ def test_quality_uses_same_labeled_cohort_for_all_models():
             after = read_quality_snapshot(db)
             assert after["studies"] == before["studies"] + 3
             assert after["feedback"] == before["feedback"] + 2
-            assert after["cohort"] == before["cohort"] + 1
+            assert after["cohort"] == before["cohort"] + 2
             for index, model in enumerate(after["models"]):
                 counts = dict(before["models"][index]["counts"])
-                counts["fn" if index == 0 else "tp"] += 1
+                counts["fn" if index == 0 else "tp"] += 2 if index == 0 else 1
                 assert model["counts"] == counts
         finally:
             db.rollback()

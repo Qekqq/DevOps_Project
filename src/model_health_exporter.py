@@ -144,7 +144,7 @@ class ModelHealthCollector:
 
         classification = GaugeMetricFamily(
             "diabetes_model_health_classification",
-            "Качество версии за 30 дней на общей размеченной выборке активных моделей",
+            "Качество версии за 30 дней по её прогнозам с фактическим исходом",
             labels=labels + ["metric"],
         )
         matrix = GaugeMetricFamily(

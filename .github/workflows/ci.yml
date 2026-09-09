@@ -14,7 +14,10 @@ on:
 
 env:
   IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/devops_project
-  IMAGE_TAG: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+  IMAGE_TAG: ${{ github.sha }}
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -96,15 +99,33 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Сборка и публикация Docker-образа
+        id: api-image
         uses: docker/build-push-action@v6
         with:
           context: .
           push: ${{ github.event_name != 'pull_request' }}
-          tags: |
-            ${{ env.IMAGE_NAME }}:latest
-            ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          tags: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          labels: org.opencontainers.image.revision=${{ github.sha }}
 
       - name: Сборка и проверка frontend-контейнера
         run: |
-          docker build -t devops-frontend-check ./frontend
-          docker run --rm devops-frontend-check nginx -t
+          docker build --label "org.opencontainers.image.revision=$IMAGE_TAG" -t "$IMAGE_NAME-frontend:$IMAGE_TAG" ./frontend
+          docker run --rm "$IMAGE_NAME-frontend:$IMAGE_TAG" nginx -t
+
+      - name: Публикация frontend и подготовка пакета выкладки
+        if: ${{ github.event_name != 'pull_request' }}
+        env:
+          API_DIGEST: ${{ steps.api-image.outputs.digest }}
+        run: |
+          docker push "$IMAGE_NAME-frontend:$IMAGE_TAG"
+          FRONTEND_IMAGE=$(docker image inspect "$IMAGE_NAME-frontend:$IMAGE_TAG" --format '{{index .RepoDigests 0}}')
+          python -m scripts.package_release --output release --commit "$IMAGE_TAG" --run-id "$GITHUB_RUN_ID" --api-image "$IMAGE_NAME@$API_DIGEST" --frontend-image "$FRONTEND_IMAGE"
+
+      - name: Сохранение точных образов и настроек выпуска
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ github.sha }}
+          path: release/
+          retention-days: 30
+          if-no-files-found: error

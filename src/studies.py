@@ -234,7 +234,7 @@ def study_detail(
     db: Session = Depends(get_db),
 ):
     study = get_study(db, patient_code, study_date)
-    if study is None or (user.role != "admin" and study.created_by != user.id):
+    if study is None:
         raise HTTPException(404, "Исследование не найдено")
     saved = db.scalars(
         select(PredictionHistory)

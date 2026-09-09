@@ -56,7 +56,7 @@ class QualityCollector:
         descriptions = {
             "studies": "Количество исследований",
             "feedback": "Количество исследований с фактическим исходом",
-            "cohort": "Количество исследований в общей выборке оценки активных моделей",
+            "cohort": "Количество исследований с фактом и прогнозом хотя бы одной активной модели",
         }
         for name, description in descriptions.items():
             yield GaugeMetricFamily(

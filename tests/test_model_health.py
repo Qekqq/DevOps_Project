@@ -4,17 +4,168 @@ from unittest.mock import MagicMock
 
 import pytest
 from prometheus_client import CollectorRegistry, generate_latest
-from sqlalchemy import Column, Float, MetaData, Table, create_engine
+from sqlalchemy import JSON, Column, Float, MetaData, Table, create_engine
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import Session
 
 from src import model_health_exporter
+from src.db.models import (
+    ModelVersion,
+    PredictionFeedback,
+    PredictionHistory,
+    RawDatasetSample,
+    Study,
+    TrainingRun,
+)
+from src.features import FEATURE_COLUMNS
 from src.model_health import (
     classification_metrics,
     feature_counts,
     month_window,
     population_stability_index,
+    read_model_health,
     target_shift,
     training_row_ids,
 )
+from src.monitoring import read_quality_snapshot
+
+
+@pytest.fixture
+def quality_db():
+    # Настоящие SQL-агрегаты на временной БД. Ограничения PostgreSQL и
+    # вычисление train-квантилей проверяются отдельно интеграционными тестами.
+    engine = create_engine("sqlite://")
+    metadata = MetaData()
+    tables = {}
+    for model in (
+        Study,
+        PredictionHistory,
+        PredictionFeedback,
+        RawDatasetSample,
+        ModelVersion,
+        TrainingRun,
+    ):
+        tables[model] = Table(
+            model.__tablename__,
+            metadata,
+            *[
+                Column(
+                    column.name,
+                    JSON() if isinstance(column.type, JSONB) else column.type,
+                )
+                for column in model.__table__.columns
+            ],
+        )
+    metadata.create_all(engine)
+    with Session(engine) as db:
+        db.execute(
+            tables[Study].insert(),
+            [
+                {
+                    "id": i,
+                    "study_date": date(2026, 8, 31) if i == 5 else date(2026, 9, 1),
+                    **dict.fromkeys(FEATURE_COLUMNS, 1),
+                }
+                for i in range(1, 8)
+            ],
+        )
+        db.execute(
+            tables[ModelVersion].insert(),
+            [
+                {
+                    "id": i,
+                    "model_version": f"v{i}",
+                    "model_name": f"model{i}",
+                    "family": "decision_tree",
+                    "role": "champion" if i == 1 else "challenger",
+                    "training_run_id": i,
+                }
+                for i in (1, 2, 3)
+            ],
+        )
+        db.execute(
+            tables[TrainingRun].insert(),
+            [{"id": i, "dataset_id": i * 11} for i in (1, 2, 3)],
+        )
+        db.execute(
+            tables[RawDatasetSample].insert(),
+            [
+                {"dataset_id": 11, "source_study_id": 6},
+                {"dataset_id": 22, "source_study_id": 7},
+            ],
+        )
+        db.execute(
+            tables[PredictionFeedback].insert(),
+            [
+                {"study_id": i, "true_label": label}
+                for i, label in {1: 1, 2: 0, 3: 1, 5: 1, 6: 1, 7: 0}.items()
+            ],
+        )
+        db.execute(
+            tables[PredictionHistory].insert(),
+            [
+                {
+                    "study_id": study_id,
+                    "model_version_id": model_id,
+                    "prediction": predicted,
+                }
+                for model_id, predictions in [
+                    (1, {1: 1, 2: 1, 4: 1, 5: 1, 6: 1, 7: 0}),
+                    (2, {2: 0, 3: 0}),
+                ]
+                for study_id, predicted in predictions.items()
+            ],
+        )
+        yield db
+    engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "model_id,counts",
+    [
+        (1, {"tp": 1, "tn": 1, "fp": 1, "fn": 0}),
+        (2, {"tp": 0, "tn": 1, "fp": 0, "fn": 1}),
+        (3, {"tp": 0, "tn": 0, "fp": 0, "fn": 0}),
+    ],
+)
+def test_period_quality_uses_own_predictions_and_own_dataset(
+    quality_db, model_id, counts
+):
+    baseline = {
+        "model_id": model_id,
+        "version": f"v{model_id}",
+        "dataset_id": model_id * 11,
+        "role": "challenger",
+        "edges": dict.fromkeys(FEATURE_COLUMNS, []),
+        "counts": {"samples": 200} | {name + "_bin_0": 200 for name in FEATURE_COLUMNS},
+        "positive": 100,
+    }
+    result = read_model_health(
+        quality_db,
+        model_id=model_id,
+        start=date(2026, 9, 1),
+        end=date(2026, 9, 2),
+        reference_cache={model_id: baseline},
+    )
+    assert result["confusion"] == counts
+    assert result["evaluated"] == sum(counts.values())
+    if model_id == 3:
+        assert all(math.isnan(value) for value in result["classification"].values())
+    else:
+        assert result["accuracy"] == pytest.approx(2 / 3 if model_id == 1 else 1 / 2)
+
+
+def test_all_time_quality_does_not_wait_for_other_models(quality_db):
+    snapshot = read_quality_snapshot(quality_db)
+    assert snapshot["cohort"] == 6
+    assert [model["counts"] for model in snapshot["models"]] == [
+        {"tp": 3, "tn": 1, "fp": 1, "fn": 0},
+        {"tp": 0, "tn": 1, "fp": 0, "fn": 1},
+        {"tp": 0, "tn": 0, "fp": 0, "fn": 0},
+    ]
+    # Третья модель ещё не обработала ни одного исследования: это видно
+    # в полноте доставки, но не мешает оценить первые две модели.
+    assert snapshot["pending"] == 7
 
 
 def test_month_window_includes_today_and_crosses_year_boundary():

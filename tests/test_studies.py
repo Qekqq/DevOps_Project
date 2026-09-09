@@ -31,8 +31,10 @@ def setup(monkeypatch):
         yield client, user, study, db
 
 
-def test_user_sees_own_models_but_not_feedback(setup):
-    client, _, _, db = setup
+@pytest.mark.parametrize("author", [1, 2, None])
+def test_user_sees_study_models_regardless_of_author_but_not_feedback(setup, author):
+    client, _, study, db = setup
+    study.created_by = author
     champion = SimpleNamespace(
         id=10, model_name="LR", model_version="lr1", role="champion"
     )
@@ -58,9 +60,9 @@ def test_user_sees_own_models_but_not_feedback(setup):
     db.scalar.assert_not_called()
 
 
-def test_user_cannot_read_another_users_study(setup):
-    client, _, study, _ = setup
-    study.created_by = 2
+def test_missing_study_returns_404(setup, monkeypatch):
+    client, _, _, _ = setup
+    monkeypatch.setattr(studies, "get_study", lambda *args: None)
     assert client.get("/studies/PAT001/2026-09-08").status_code == 404
 
 

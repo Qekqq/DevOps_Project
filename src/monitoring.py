@@ -1,4 +1,4 @@
-"""Качество активных моделей на общей выборке с фактическим исходом."""
+"""Качество каждой активной модели по её прогнозам с фактическим исходом."""
 
 from datetime import date, timedelta
 from typing import Literal
@@ -102,16 +102,18 @@ def read_quality_snapshot(db):
         .order_by(ModelVersion.id)
     ).all()
     ids = [model.id for model in models]
-    # Одна и та же группа исследований для обеих моделей. Незавершённая
-    # доставка фонового прогноза не должна менять состав только одной выборки.
+    # Полнота доставки — отдельный показатель, не фильтр качества моделей.
     complete = (
         select(PredictionHistory.study_id)
         .where(PredictionHistory.model_version_id.in_(ids))
         .group_by(PredictionHistory.study_id)
         .having(func.count() == len(ids))
     )
+    predicted = select(PredictionHistory.study_id).where(
+        PredictionHistory.model_version_id.in_(ids)
+    )
     cohort = select(PredictionFeedback.study_id).where(
-        PredictionFeedback.study_id.in_(complete)
+        PredictionFeedback.study_id.in_(predicted)
     )
     grouped = db.execute(
         select(
@@ -124,10 +126,7 @@ def read_quality_snapshot(db):
             PredictionFeedback,
             PredictionFeedback.study_id == PredictionHistory.study_id,
         )
-        .where(
-            PredictionHistory.model_version_id.in_(ids),
-            PredictionHistory.study_id.in_(cohort),
-        )
+        .where(PredictionHistory.model_version_id.in_(ids))
         .group_by(
             PredictionHistory.model_version_id,
             PredictionFeedback.true_label,
