@@ -61,7 +61,7 @@ jobs:
         if: failure()
         run: |
           docker compose ps -a
-          docker compose logs --tail=100 diabetes-api kafka-consumer
+          docker compose logs --tail=100 diabetes-api kafka-consumer metrics-exporter frontend grafana prometheus alloy loki vault
       - name: Удаление одноразового тестового стенда
         if: always()
         run: docker compose down -v
