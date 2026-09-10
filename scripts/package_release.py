@@ -43,6 +43,10 @@ def package_release(output, commit, run_id, api_image, frontend_image):
             service["image"] = frontend_image
         else:
             subprocess.run(["docker", "pull", service["image"]], check=True)
+            if "@sha256:" in service["image"]:
+                # Preserve the digest explicitly reviewed in Compose, even if
+                # Docker knows other repository digests for this same image.
+                continue
             digests = json.loads(
                 subprocess.check_output(
                     [

@@ -177,7 +177,9 @@ services:
     restart: unless-stopped
 
   db:
-    image: postgres:16
+    # Keep persistent infrastructure identical in CI and production.
+    # Updating these digests requires a separate infrastructure upgrade.
+    image: postgres:16@sha256:081f1bc7bd5e143dbb6e487b710bbc27712cdcfaced4c071b8e47349aa1b4171
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-diabetes}
@@ -195,7 +197,7 @@ services:
       retries: 10
 
   vault:
-    image: hashicorp/vault:1.17
+    image: hashicorp/vault:1.17@sha256:74a4ab138ab5d64725e89cd9a9c73f7040c7fe49e98b71697b275ca9a69919df
     restart: unless-stopped
     cap_add:
       - IPC_LOCK
@@ -212,7 +214,7 @@ services:
       retries: 20
 
   kafka:
-    image: bitnamilegacy/kafka:3.7
+    image: bitnamilegacy/kafka:3.7@sha256:c274f870840a5d854fb601408c398e596c795582d869b5d85c7f7d882e5c478d
     restart: unless-stopped
     environment:
       KAFKA_CFG_NODE_ID: 1

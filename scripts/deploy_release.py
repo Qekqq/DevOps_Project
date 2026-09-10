@@ -139,6 +139,31 @@ def vault_ready():
         return False
 
 
+def check_infrastructure(config, services):
+    """Проверяет текущие образы до загрузки выпуска и любых изменений БД."""
+    for name in INFRASTRUCTURE:
+        container = services[name]
+        if not container["State"]["Running"]:
+            raise RuntimeError(f"Сервис {name} остановлен. Сначала выполните .\\start")
+        if container["State"].get("Health", {}).get("Status") in (
+            "starting",
+            "unhealthy",
+        ):
+            raise RuntimeError(f"Сервис {name} ещё не подтвердил готовность")
+        image = docker_json("image", "inspect", container["Image"])[0]
+        expected = config["services"][name]["image"].split("@", 1)[1]
+        # RepoDigests may identify a multi-platform index, while Id identifies
+        # the image for this host. Do not compare only these different IDs.
+        digests = {value.rsplit("@", 1)[-1] for value in image.get("RepoDigests", [])}
+        digests.add(image["Id"])
+        if expected not in digests:
+            raise RuntimeError(
+                f"Образ {name} отличается от проверяемого выпуска: "
+                f"текущий {container['Image']}, ожидается {expected}. "
+                "Требуется отдельное обновление инфраструктуры; приложение не изменено"
+            )
+
+
 def check_application():
     deadline = time.monotonic() + 120
     while time.monotonic() < deadline:
@@ -200,6 +225,7 @@ def deploy(folder, expected_commit, expected_run, *, preflight=False):
         raise RuntimeError(
             "Vault заблокирован. Выполните .\\start для разблокировки, затем повторите CD"
         )
+    check_infrastructure(config, services)
     env = service_environment(services)
     home = deployment_home()
     with deployment_lock(home):
@@ -219,24 +245,14 @@ def deploy(folder, expected_commit, expected_run, *, preflight=False):
         compose(runtime_path, env, "config", "--quiet")
         if preflight:
             print(
-                "Пакет, Vault, сервисные реквизиты и конфигурация проверены. Контейнеры не изменены."
+                "Пакет, образы инфраструктуры, Vault, сервисные реквизиты и конфигурация проверены. Контейнеры не изменены."
             )
             return
-        compose(runtime_path, env, "pull", *APPLICATION, *MONITORING, *INFRASTRUCTURE)
-        for name in INFRASTRUCTURE:
-            image = docker_json("image", "inspect", config["services"][name]["image"])[
-                0
-            ]
-            if image["Id"] != services[name]["Image"]:
-                raise RuntimeError(
-                    f"Для {name} требуется отдельное обновление инфраструктуры; приложение не изменено"
-                )
-            if not services[name]["State"]["Running"]:
-                raise RuntimeError(
-                    f"Сервис {name} остановлен. Сначала выполните .\\start"
-                )
+        print("Получение проверенных образов приложения и мониторинга...")
+        compose(runtime_path, env, "pull", *APPLICATION, *MONITORING)
         # Обязательно до миграций, регистрации моделей и замены контейнеров.
         # Ошибка копирования прерывает выкладку; восстановления здесь нет.
+        print("Создание резервной копии БД перед обновлением...")
         backup = create_database_backup(
             home / "backups", container=services["db"]["Id"]
         )
@@ -252,6 +268,7 @@ def deploy(folder, expected_commit, expected_run, *, preflight=False):
                 "--if-no-champion",
             ],
         ):
+            print(f"Выполнение {command[0]}...")
             compose(
                 runtime_path,
                 env,
@@ -264,6 +281,7 @@ def deploy(folder, expected_commit, expected_run, *, preflight=False):
                 "-m",
                 *command,
             )
+        print("Обновление контейнеров приложения и мониторинга...")
         compose(
             runtime_path,
             env,
@@ -277,6 +295,7 @@ def deploy(folder, expected_commit, expected_run, *, preflight=False):
             *APPLICATION,
             *MONITORING,
         )
+        print("Проверка готовности обновлённого приложения...")
         check_application()
         state = {
             "commit": manifest["commit"],

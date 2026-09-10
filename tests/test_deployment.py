@@ -126,7 +126,9 @@ def deployment(release, services, tmp_path, monkeypatch):
     monkeypatch.setattr(
         deploy,
         "docker_json",
-        lambda *args: [{"Id": args[-1].split("/")[-1].split("@")[0]}],
+        lambda *args: [
+            {"Id": args[-1], "RepoDigests": [f"example/{args[-1]}@{DIGEST}"]}
+        ],
     )
     execute = MagicMock()
     health = MagicMock()
@@ -189,6 +191,49 @@ def test_preflight_does_not_start_or_pull_containers(release, deployment):
     assert not (deploy.deployment_home() / "current.json").exists()
 
 
+@pytest.mark.parametrize("preflight", [False, True])
+def test_infrastructure_mismatch_blocks_pull_backup_and_update(
+    release, deployment, monkeypatch, preflight
+):
+    execute, health = deployment
+    monkeypatch.setattr(
+        deploy, "docker_json", lambda *args: [{"Id": "different", "RepoDigests": []}]
+    )
+    with pytest.raises(RuntimeError, match="Образ vault отличается"):
+        deploy.deploy(release, SHA, "123", preflight=preflight)
+    execute.assert_not_called()
+    deploy.create_database_backup.assert_not_called()
+    health.assert_not_called()
+
+
+@pytest.mark.parametrize("status", ["stopped", "starting", "unhealthy"])
+def test_unready_infrastructure_blocks_deployment(
+    release, deployment, services, status
+):
+    execute, health = deployment
+    services["db"]["State"] = {
+        "Running": status != "stopped",
+        "Health": {"Status": status},
+    }
+    with pytest.raises(RuntimeError, match="Сервис db"):
+        deploy.deploy(release, SHA, "123")
+    execute.assert_not_called()
+    deploy.create_database_backup.assert_not_called()
+    health.assert_not_called()
+
+
+def test_infrastructure_accepts_multi_platform_digest(release, services, monkeypatch):
+    _, config = deploy.read_release(release)
+    monkeypatch.setattr(
+        deploy,
+        "docker_json",
+        lambda *args: [
+            {"Id": "platform-specific-id", "RepoDigests": [f"repo@{DIGEST}"]}
+        ],
+    )
+    deploy.check_infrastructure(config, services)
+
+
 def test_backup_precedes_every_database_change_and_container_update(
     release, deployment
 ):
@@ -231,7 +276,8 @@ def test_deployment_lock_blocks_overlapping_manual_and_ci_update(tmp_path):
     assert not (tmp_path / "deployment.lock").exists()
 
 
-def test_package_pins_images_and_has_no_build_context(tmp_path, monkeypatch):
+@pytest.mark.parametrize("pinned", [False, True])
+def test_package_pins_images_and_has_no_build_context(tmp_path, monkeypatch, pinned):
     from scripts import package_release as module
 
     root = tmp_path / "source"
@@ -243,7 +289,7 @@ def test_package_pins_images_and_has_no_build_context(tmp_path, monkeypatch):
         "services": {
             "frontend": {"build": {"context": "frontend"}},
             "diabetes-api": {"build": {"context": "."}},
-            "db": {"image": "postgres:16"},
+            "db": {"image": f"postgres:16@{DIGEST}" if pinned else "postgres:16"},
         }
     }
     output = MagicMock(
@@ -256,5 +302,8 @@ def test_package_pins_images_and_has_no_build_context(tmp_path, monkeypatch):
         folder, SHA, "123", f"example/api@{DIGEST}", f"example/frontend@{DIGEST}"
     )
     manifest, actual = deploy.read_release(folder, SHA, "123")
-    assert actual["services"]["db"]["image"] == f"postgres@{DIGEST}"
+    assert actual["services"]["db"]["image"] == (
+        f"postgres:16@{DIGEST}" if pinned else f"postgres@{DIGEST}"
+    )
+    assert output.call_count == (1 if pinned else 2)
     assert len(manifest["files"]) == 4
