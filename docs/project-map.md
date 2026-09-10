@@ -114,6 +114,8 @@ DevOps_Project/
 Главные таблицы: `users`, `user_sessions`, `studies`, `predictions`, `model_versions`,
 `feedback`. Для происхождения данных и аудита: `datasets`, `dataset_rows`,
 `training_runs`, `study_edits`, `feedback_history`, `model_role_history`.
+Для незавершённых фоновых расчётов — `shadow_retries`; задачи удаляются после
+успеха или выхода версии из роли challenger. Таблицу создаёт обновление БД при CD.
 
 ## Kafka и фоновые модели
 
@@ -122,6 +124,7 @@ DevOps_Project/
 | `src/kafka/producer.py` | Публикация сообщения в Kafka и ожидание подтверждения приёма брокером |
 | `src/kafka/consumer.py` | Постоянный цикл обработчика, сохранение основного прогноза, запуск фонового расчёта, подтверждение обработки |
 | `src/kafka/shadow.py` | Чтение активных challenger из БД, расчёт и сохранение их прогнозов |
+| `src/kafka/retries.py` | Запись неудачных фоновых задач в PostgreSQL и автоматические повторы |
 | `src/kafka/__init__.py` | Пакет модулей Kafka |
 
 ## Обучение и загрузка моделей
@@ -176,7 +179,11 @@ DevOps_Project/
 
 | Файл | Назначение |
 |---|---|
-| `scripts/start_stack.py` | Управляемый запуск, разблокировка Vault, настройка доступа, подготовка БД и ожидание сервисов |
+| `scripts/start_stack.py` | Первоначальная подготовка и одноразовый стенд CI/CD; локальная сборка только с `--local-build` |
+| `scripts/deploy_release.py` | Выкладка проверенных образов, обязательная копия БД; возобновление установленного приложения через `make start` |
+| `scripts/package_release.py` | Пакет конфигурации и образов по digest из проверенного коммита |
+| `scripts/manage_runner.ps1` | Установка и запуск Windows runner через `make setup-runner` и `make runner` |
+| `scripts/preview_frontend.py` | Временный просмотр локальных изменений интерфейса через `make preview` |
 | `scripts/seed_demo_history.py` | Воспроизводимая помеченная история через расчёт API и Kafka, без перезаписи существующих данных |
 | `scripts/export_model_history.py` | Ретроспективные агрегаты всех трёх блоков по датам исследования |
 | `scripts/update_database.py` | Приведение БД к ожидаемой структуре |
@@ -192,7 +199,7 @@ DevOps_Project/
 | Файл | Что проверяет или запускает |
 |---|---|
 | `.github/workflows/ci.yml` | Проверки кода и сборка образов |
-| `.github/workflows/cd.yml` | Отдельный стенд для интеграционных проверок после успешного CI |
+| `.github/workflows/cd.yml` | После успешного CI в main: одноразовая проверка, затем обновление постоянного приложения через Windows runner |
 | `.github/actions/pull-models/action.yml` | Получение артефактов моделей через DVC |
 | `tests/test_api.py` | Поведение API и нового прогноза |
 | `tests/test_auth.py` | Авторизация и доступ |
@@ -216,10 +223,11 @@ DevOps_Project/
 | `tests/test_train.py` | Обучение и артефакты |
 | `tests/integration/conftest.py` | Общая подготовка интеграционных проверок |
 | `tests/integration/test_database_contract.py` | Реальная схема и контракт БД |
-| `tests/integration/test_prediction_flow.py` | Связь API, Kafka, обработчика и БД |
+| `tests/integration/test_prediction_flow.py` | Связь API, Kafka, обработчика и БД; сохранение и повтор фоновых задач |
 | `tests/integration/test_monitoring_stack.py` | Работа компонентов мониторинга вместе |
 | `tests/integration/test_vault_lifecycle.py` | Перезапуск Vault и восстановление доступа |
 | `tests/__init__.py` | Пакет тестов |
+| `tests/test_shadow_retries.py` | Повторы, паузы после ошибок и отмена задачи при смене роли модели |
 
 ## Документация и локальные данные
 

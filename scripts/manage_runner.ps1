@@ -50,7 +50,7 @@ if ($Install) {
 }
 
 if (-not (Test-Path -LiteralPath (Join-Path $runnerRoot '.runner'))) {
-    Write-Host 'Runner is not registered. Run .\setup-runner first.'
+    Write-Host 'Runner is not registered. Run make setup-runner first.'
     exit 1
 }
 

@@ -6,7 +6,7 @@ from pathlib import Path
 from sqlalchemy import text
 
 from src.db.database import get_engine
-from src.db.models import StudyEdit, UserSession
+from src.db.models import ShadowRetry, StudyEdit, UserSession
 
 
 def main():
@@ -25,6 +25,7 @@ def main():
         connection.exec_driver_sql("SELECT pg_advisory_xact_lock(20260908, 1)")
         UserSession.__table__.create(connection, checkfirst=True)
         StudyEdit.__table__.create(connection, checkfirst=True)
+        ShadowRetry.__table__.create(connection, checkfirst=True)
         connection.exec_driver_sql(
             "ALTER TABLE predictions DROP COLUMN IF EXISTS request_source"
         )

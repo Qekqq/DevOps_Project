@@ -1,16 +1,25 @@
 """Проверка ограничений и истории PostgreSQL; тестовые изменения откатываются."""
 
+import json
 from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError
 
 from scripts.update_database import main as update_database
+from src.config import get_project_root
 from src.db.database import get_session_factory
 from src.db.load_raw_dataset import import_raw_dataset
-from src.db.models import FeedbackHistory, ModelRoleHistory, Study
+from src.db.models import (
+    Dataset,
+    FeedbackHistory,
+    ModelRoleHistory,
+    RawDatasetSample,
+    Study,
+    TrainingRun,
+)
 from src.db.repositories import save_prediction_feedback
 from src.feedback_dataset import read_confirmed_studies, save_snapshot
 
@@ -21,13 +30,24 @@ def test_database_contract():
     update_database()
     with get_session_factory()() as db, TemporaryDirectory() as folder:
         try:
+            manifest = json.loads(
+                (get_project_root() / "models/current.json").read_text(encoding="utf-8")
+            )
+            dataset = db.scalar(
+                select(Dataset)
+                .join(TrainingRun)
+                .where(TrainingRun.release_id == manifest["release"])
+            )
+            assert dataset is not None
+            assert dataset.source_sha256 == manifest["dataset"]["sha256"]
+            assert dataset.row_count == manifest["dataset"]["rows"]
             assert (
                 db.scalar(
-                    text(
-                        "SELECT count(*) FROM dataset_rows WHERE source_study_id IS NULL"
-                    )
+                    select(func.count())
+                    .select_from(RawDatasetSample)
+                    .where(RawDatasetSample.dataset_id == dataset.id)
                 )
-                == 768
+                == manifest["dataset"]["rows"]
             )
             assert db.scalar(select(ModelRoleHistory.id).limit(1)) is not None
             values = dict(

@@ -31,7 +31,7 @@ def test_quality_uses_each_models_own_labeled_predictions():
                 .where(ModelVersion.role.in_(["champion", "challenger"]))
                 .order_by(ModelVersion.id)
             ).all()
-            assert len(models) == 2
+            assert models, "Для проверки нужен активный выпуск"
             for index in range(3):
                 study = Study(
                     patient_code=f"QMT{index:03d}",
@@ -52,15 +52,15 @@ def test_quality_uses_each_models_own_labeled_predictions():
                 if index != 1:
                     db.add(PredictionFeedback(study_id=study.id, true_label=1))
                 for model_index, model in enumerate(models):
-                    if index == 2 and model_index == 1:
+                    if index == 2 and model_index != 0:
                         continue
                     db.add(
                         PredictionHistory(
                             study_id=study.id,
                             model_version_id=model.id,
                             role_at_prediction=model.role,
-                            prediction=model_index,
-                            probability=float(model_index),
+                            prediction=model_index % 2,
+                            probability=float(model_index % 2),
                         )
                     )
             db.flush()
@@ -70,7 +70,7 @@ def test_quality_uses_each_models_own_labeled_predictions():
             assert after["cohort"] == before["cohort"] + 2
             for index, model in enumerate(after["models"]):
                 counts = dict(before["models"][index]["counts"])
-                counts["fn" if index == 0 else "tp"] += 2 if index == 0 else 1
+                counts["fn" if index % 2 == 0 else "tp"] += 2 if index == 0 else 1
                 assert model["counts"] == counts
         finally:
             db.rollback()

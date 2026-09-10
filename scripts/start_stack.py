@@ -46,8 +46,14 @@ class KeePassCredentials:
             args, input=content, text=True, encoding="utf-8", capture_output=True
         )
         if result.returncode:
+            if command == "db-info":
+                raise RuntimeError(
+                    f"Не удалось открыть базу KeePassXC: {self.database}. "
+                    "Проверьте мастер-пароль в KeePassXC и необходимость ключевого файла."
+                )
             raise RuntimeError(
-                "KeePassXC не выполнил операцию. Проверьте пароль, файл базы и запись ключей Vault."
+                f"База KeePassXC открылась, но операция {command} с записью "
+                f"{self.entry} не выполнена. Проверьте наличие и расположение записи."
             )
         return result.stdout
 
@@ -212,7 +218,7 @@ def main():
     args = parser.parse_args()
     if not args.ci and not args.local_build:
         parser.error(
-            "Для запуска существующей версии используйте .\\start. Локальная сборка требует --local-build"
+            "Для запуска существующей версии используйте make start. Локальная сборка требует --local-build"
         )
     if args.release_dir and not args.ci:
         parser.error(

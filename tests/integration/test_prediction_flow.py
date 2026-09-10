@@ -10,14 +10,122 @@ from datetime import date
 from http.cookies import SimpleCookie
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import select
 
+from src.config import get_project_root
 from src.db.database import get_session_factory
 from src.db.models import ModelVersion, PredictionHistory, Study, User
 from src.passwords import hash_password
 
 TOKEN = None
 CSRF = None
+
+
+def test_durable_shadow_retry_survives_failure_and_saves_once(monkeypatch):
+    from contextlib import contextmanager
+    from datetime import datetime, timedelta, timezone
+    from unittest.mock import Mock
+
+    from src.db.models import ShadowRetry
+    from src.kafka import retries
+    from src.kafka.shadow import ShadowPredictionError
+
+    factory = get_session_factory()
+    with factory() as db:
+        model = db.scalar(select(ModelVersion).where(ModelVersion.role == "challenger"))
+        if model is None:
+            pytest.skip("В выпуске нет фоновых моделей для повторного расчёта")
+        model_id, version = model.id, model.model_version
+        study = Study(
+            patient_code="RTY001",
+            study_date=date(2026, 9, 10),
+            features={
+                "pregnancies": 0,
+                "glucose": 120,
+                "blood_pressure": 70,
+                "skin_thickness": 20,
+                "insulin": 0,
+                "bmi": 30,
+                "diabetes_pedigree_function": 0.5,
+                "age": 40,
+            },
+        )
+        db.add(study)
+        db.flush()
+        study_id = study.id
+        message = {
+            "patient_code": study.patient_code,
+            "study_date": study.study_date.isoformat(),
+        }
+        db.commit()
+    retries.defer_predictions(message, [version])
+    retries.defer_predictions(message, [version])
+    # Новый сеанс видит одну сохранённую задачу после повторной доставки Kafka.
+    with factory() as db:
+        tasks = db.scalars(
+            select(ShadowRetry).where(ShadowRetry.study_id == study_id)
+        ).all()
+        assert len(tasks) == 1
+        assert tasks[0].attempts == 0
+
+    def execute_due(*, fail):
+        with factory() as db:
+            task = db.scalar(
+                select(ShadowRetry)
+                .where(ShadowRetry.study_id == study_id)
+                .with_for_update()
+            )
+            task.next_attempt_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+            db.flush()
+
+            @contextmanager
+            def session():
+                yield db
+
+            # Изменение срока пока не закоммичено: рабочий поток не перехватит задачу.
+            with monkeypatch.context() as patch:
+                patch.setattr(retries, "get_session_factory", lambda: session)
+                if fail:
+                    patch.setattr(
+                        retries,
+                        "predict_challengers",
+                        Mock(side_effect=ShadowPredictionError([version])),
+                    )
+                retries.retry_task(study_id, model_id)
+
+    execute_due(fail=True)
+    with factory() as db:
+        task = db.get(ShadowRetry, (study_id, model_id))
+        assert task.attempts == 1
+        assert task.next_attempt_at > datetime.now(timezone.utc)
+    execute_due(fail=False)
+    with factory() as db:
+        assert db.get(ShadowRetry, (study_id, model_id)) is None
+        predictions = db.scalars(
+            select(PredictionHistory).where(
+                PredictionHistory.study_id == study_id,
+                PredictionHistory.model_version_id == model_id,
+            )
+        ).all()
+        assert len(predictions) == 1
+        assert predictions[0].prediction in (0, 1)
+    # Повтор после сбоя между сохранением прогноза и удалением задачи не создаёт дубль.
+    retries.defer_predictions(message, [version])
+    execute_due(fail=False)
+    with factory() as db:
+        assert db.get(ShadowRetry, (study_id, model_id)) is None
+        assert (
+            len(
+                db.scalars(
+                    select(PredictionHistory).where(
+                        PredictionHistory.study_id == study_id,
+                        PredictionHistory.model_version_id == model_id,
+                    )
+                ).all()
+            )
+            == 1
+        )
 
 
 def request(payload):
@@ -67,7 +175,11 @@ def check_prediction_flow():
                 )
             )
         )
-        assert len(expected) == 2, "Ожидаются две активные модели"
+        manifest = json.loads(
+            (get_project_root() / "models/current.json").read_text(encoding="utf-8")
+        )
+        assert expected == {record["version"] for record in manifest["models"]}
+        assert expected, "В выпуске нет активных моделей"
     first = request(payload)
     deadline = time.monotonic() + 50
     while True:
@@ -81,10 +193,12 @@ def check_prediction_flow():
                 )
             ).all()
             if {row.model_version.model_version for row in records} == expected:
-                assert len(records) == 2
+                assert len(records) == len(expected)
                 break
         if time.monotonic() >= deadline:
-            raise RuntimeError("Kafka consumer не сохранил прогнозы обеих моделей")
+            raise RuntimeError(
+                "Kafka consumer не сохранил прогнозы всех моделей выпуска"
+            )
         time.sleep(1)
     repeated = request(payload)
     assert repeated["cached"] is True

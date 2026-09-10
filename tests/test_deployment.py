@@ -1,10 +1,13 @@
 """Выкладка проверенных образов и запрет изменений при неготовом окружении."""
 
 import hashlib
+import http.client
+import io
 import json
 import re
 import shutil
 import subprocess
+import sys
 from unittest.mock import MagicMock
 
 import pytest
@@ -14,6 +17,93 @@ from scripts.package_release import package_release
 
 SHA = "a" * 40
 DIGEST = "sha256:" + "b" * 64
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        http.client.RemoteDisconnected("Remote end closed connection without response"),
+        ConnectionResetError(),
+        TimeoutError(),
+        deploy.urllib.error.URLError("connection refused"),
+        deploy.urllib.error.HTTPError("http://vault", 503, "starting", {}, None),
+    ],
+)
+def test_vault_startup_retries_transient_http_failures(monkeypatch, error):
+    request = MagicMock(side_effect=[error, io.BytesIO(b'{"sealed": true}')])
+    pause = MagicMock()
+    monkeypatch.setattr(deploy.urllib.request, "urlopen", request)
+    monkeypatch.setattr(deploy.time, "sleep", pause)
+    assert deploy.wait_for_vault_response("http://vault") == {"sealed": True}
+    assert request.call_count == 2
+    pause.assert_called_once_with(2)
+
+
+def test_vault_startup_timeout_is_bounded(monkeypatch):
+    monkeypatch.setattr(deploy.time, "monotonic", MagicMock(side_effect=[0, 61]))
+    monkeypatch.setattr(
+        deploy.urllib.request,
+        "urlopen",
+        MagicMock(side_effect=http.client.RemoteDisconnected()),
+    )
+    with pytest.raises(RuntimeError, match="Vault не ответил вовремя"):
+        deploy.wait_for_vault_response("http://vault")
+
+
+def test_invalid_unseal_request_is_not_retried_or_logged(monkeypatch):
+    request = MagicMock(
+        side_effect=deploy.urllib.error.HTTPError(
+            "http://vault", 400, "private-response", {}, None
+        )
+    )
+    monkeypatch.setattr(deploy.urllib.request, "urlopen", request)
+    with pytest.raises(RuntimeError, match="HTTP 400") as error:
+        deploy.wait_for_vault_response("http://vault")
+    assert "private-response" not in str(error.value)
+    request.assert_called_once()
+
+
+def test_resume_waits_for_vault_and_retries_unseal_after_disconnect(
+    tmp_path, monkeypatch
+):
+    from scripts import start_stack
+
+    database = tmp_path / "keys.kdbx"
+    database.touch()
+    store = MagicMock()
+    store.database = str(database)
+    store.read.return_value = {"unseal_key": "test-key"}
+    credentials = MagicMock(return_value=store)
+    execute = MagicMock()
+    health = MagicMock()
+    monkeypatch.setattr(start_stack, "KeePassCredentials", credentials)
+    monkeypatch.setattr(
+        start_stack, "KEEPASS_PATH_FILE", tmp_path / "remembered-path.txt"
+    )
+    monkeypatch.setattr(
+        deploy, "existing_services", lambda: {"vault": {"Id": "vault-id"}}
+    )
+    monkeypatch.setattr(deploy.subprocess, "run", execute)
+    monkeypatch.setattr(deploy, "check_application", health)
+    monkeypatch.setattr(deploy.time, "sleep", lambda _: None)
+    request = MagicMock(
+        side_effect=[
+            http.client.RemoteDisconnected(),
+            io.BytesIO(b'{"initialized": true, "sealed": true}'),
+            http.client.RemoteDisconnected(),
+            io.BytesIO(b'{"sealed": false}'),
+        ]
+    )
+    monkeypatch.setattr(deploy.urllib.request, "urlopen", request)
+    deploy.resume(str(database))
+    assert request.call_count == 4
+    credentials.assert_called_once()
+    health.assert_called_once()
+    assert execute.call_args_list[0].args[0] == ["docker", "start", "vault-id"]
+    assert all(
+        call.args[0][:2] == ["docker", "start"] for call in execute.call_args_list
+    )
+    assert (tmp_path / "remembered-path.txt").read_text() == str(database)
 
 
 @pytest.fixture
@@ -203,7 +293,8 @@ def test_failed_health_does_not_replace_last_successful_release(release, deploym
     with pytest.raises(RuntimeError, match="not ready"):
         deploy.deploy(release, SHA, "123")
     assert json.loads(state.read_text()) == {"commit": "previous"}
-    assert not (home / "deployment.lock").exists()
+    with deploy.deployment_lock(home):
+        pass
 
 
 def test_sealed_vault_does_not_change_containers(release, deployment, monkeypatch):
@@ -305,7 +396,41 @@ def test_deployment_lock_blocks_overlapping_manual_and_ci_update(tmp_path):
         with pytest.raises(RuntimeError, match="Другая выкладка"):
             with deploy.deployment_lock(tmp_path):
                 pytest.fail("Overlapping deployment was allowed")
-    assert not (tmp_path / "deployment.lock").exists()
+    with deploy.deployment_lock(tmp_path):
+        pass
+
+
+def test_deployment_lock_recovers_after_abrupt_process_exit(tmp_path):
+    program = (
+        "from pathlib import Path\n"
+        "import os,sys\n"
+        "from scripts.deploy_release import deployment_lock\n"
+        "with deployment_lock(Path(sys.argv[1])):\n"
+        "    print('locked', flush=True)\n"
+        "    sys.stdin.readline()\n"
+        "    os._exit(7)\n"
+    )
+    with subprocess.Popen(
+        [sys.executable, "-u", "-c", program, str(tmp_path)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    ) as child:
+        try:
+            assert child.stdout.readline().strip() == "locked"
+            with pytest.raises(RuntimeError, match="Другая выкладка"):
+                with deploy.deployment_lock(tmp_path):
+                    pytest.fail("Concurrent process acquired the lock")
+            child.communicate("exit\n", timeout=15)
+            assert child.returncode == 7
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=15)
+    # Старый файл существует, однако никакого живого владельца больше нет.
+    assert (tmp_path / "deployment.lock").exists()
+    with deploy.deployment_lock(tmp_path):
+        pass
 
 
 @pytest.mark.parametrize("pinned", [False, True])
