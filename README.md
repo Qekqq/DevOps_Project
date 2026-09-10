@@ -146,6 +146,9 @@ runner. Исходники не собираются, AppRole не заменя�
 Vault). Если GitHub API не вернул SHA256, скопируйте сумму со страницы настройки runner.
 Ожидаемое имя — `devops-production-windows`, метка — `devops-production`, статус — Idle.
 Runner работает в фоне под текущей учётной записью Windows с доступом к Docker Desktop.
+Windows-задание использует уже установленный Python из `.venv` проекта (или путь
+`DEVOPS_PYTHON` в окружении runner). Установка Python через `setup-python` выполняется
+только на временном окружении GitHub; локальная выкладка не запускает установщик.
 После выключения ПК запускается вместе с `.\start`; отдельно — `.\runner`.
 
 В Settings → Environments для `production` разрешите выкладку только из `main`.
