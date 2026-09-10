@@ -224,6 +224,27 @@ class PredictionHistory(Base):
         return "detected" if self.prediction == 1 else "not_detected"
 
 
+class ShadowRetry(Base):
+    """Незавершённый фоновый расчёт; удаляется после успеха или архивации модели."""
+
+    __tablename__ = "shadow_retries"
+    study_id = Column(
+        BigInteger, ForeignKey("studies.id", ondelete="RESTRICT"), primary_key=True
+    )
+    model_version_id = Column(
+        BigInteger,
+        ForeignKey("model_versions.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    attempts = Column(Integer, nullable=False, server_default=text("0"))
+    next_attempt_at = timestamp()
+    created_at = timestamp()
+    __table_args__ = (
+        CheckConstraint("attempts >= 0"),
+        Index("ix_shadow_retries_due", "next_attempt_at"),
+    )
+
+
 class PredictionFeedback(Base):
     __tablename__ = "feedback"
     id = identifier()

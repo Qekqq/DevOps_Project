@@ -21,7 +21,13 @@ registry = ModelRegistry()
 logger = get_logger(__name__)
 
 
-def predict_challengers(message):
+class ShadowPredictionError(RuntimeError):
+    def __init__(self, versions):
+        self.versions = versions
+        super().__init__("Не завершены фоновые прогнозы: " + ", ".join(versions))
+
+
+def predict_challengers(message, *, only_versions=None):
     session_factory = get_session_factory()
     study_date = date.fromisoformat(message["study_date"])
     with session_factory() as db:
@@ -37,6 +43,8 @@ def predict_challengers(message):
         )
     failures = []
     for version in versions:
+        if only_versions is not None and version not in only_versions:
+            continue
         try:
             with session_factory() as db:
                 db.execute(
@@ -83,9 +91,12 @@ def predict_challengers(message):
             return
         except DuplicatePredictionError:
             pass
-        except Exception:
-            logger.exception("Ошибка фонового прогноза версии %s", version)
+        except Exception as error:
+            # SQLAlchemy exceptions can contain medical inputs in parameters.
+            logger.error(
+                "Ошибка фонового прогноза версии %s: %s", version, type(error).__name__
+            )
             failures.append(version)
     if failures:
         # Успешные результаты уже зафиксированы. При повторе они пропускаются.
-        raise RuntimeError("Не завершены фоновые прогнозы: " + ", ".join(failures))
+        raise ShadowPredictionError(failures)

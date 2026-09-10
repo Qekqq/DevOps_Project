@@ -225,3 +225,20 @@ CREATE TABLE predictions (
 )
 
 ;
+
+
+CREATE TABLE shadow_retries (
+	study_id BIGINT NOT NULL,
+	model_version_id BIGINT NOT NULL,
+	attempts INTEGER DEFAULT 0 NOT NULL,
+	next_attempt_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+	PRIMARY KEY (study_id, model_version_id),
+	CHECK (attempts >= 0),
+	FOREIGN KEY(study_id) REFERENCES studies (id) ON DELETE RESTRICT,
+	FOREIGN KEY(model_version_id) REFERENCES model_versions (id) ON DELETE RESTRICT
+)
+
+;
+
+CREATE INDEX ix_shadow_retries_due ON shadow_retries (next_attempt_at);

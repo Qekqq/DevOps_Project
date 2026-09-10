@@ -2,6 +2,7 @@
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -20,6 +21,12 @@ PROJECT = "devops_project"
 APPLICATION = ["diabetes-api", "kafka-consumer", "metrics-exporter", "frontend"]
 MONITORING = ["loki", "prometheus", "grafana", "alloy"]
 INFRASTRUCTURE = ["vault", "db", "kafka"]
+HTTP_CONNECTION_ERRORS = (
+    urllib.error.URLError,
+    TimeoutError,
+    ConnectionError,
+    http.client.HTTPException,
+)
 
 
 def deployment_home():
@@ -135,8 +142,30 @@ def vault_ready():
             "http://127.0.0.1:8201/v1/sys/health", timeout=5
         ) as response:
             return response.status == 200
-    except (urllib.error.URLError, TimeoutError):
+    except HTTP_CONNECTION_ERRORS:
         return False
+
+
+def wait_for_vault_response(request, timeout=60):
+    """Ждёт HTTP API после запуска контейнера, включая ранний обрыв соединения."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as error:
+            if error.code < 500:
+                # Не выводим тело запроса разблокировки или ответ с секретами.
+                raise RuntimeError(
+                    f"Vault отклонил запрос (HTTP {error.code}); проверьте настройки и ключи"
+                ) from None
+        except HTTP_CONNECTION_ERRORS:
+            pass
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                "Vault не ответил вовремя. Проверьте контейнер Vault и повторите make start"
+            ) from None
+        time.sleep(2)
 
 
 def check_infrastructure(config, services):
@@ -144,7 +173,9 @@ def check_infrastructure(config, services):
     for name in INFRASTRUCTURE:
         container = services[name]
         if not container["State"]["Running"]:
-            raise RuntimeError(f"Сервис {name} остановлен. Сначала выполните .\\start")
+            raise RuntimeError(
+                f"Сервис {name} остановлен. Сначала выполните make start"
+            )
         if container["State"].get("Health", {}).get("Status") in (
             "starting",
             "unhealthy",
@@ -194,8 +225,7 @@ def check_application():
                 raise RuntimeError("Обработчик Kafka или экспортёр метрик не готов")
             return
         except (
-            urllib.error.URLError,
-            TimeoutError,
+            *HTTP_CONNECTION_ERRORS,
             RuntimeError,
             subprocess.TimeoutExpired,
         ):
@@ -207,15 +237,29 @@ def check_application():
 def deployment_lock(home):
     home.mkdir(parents=True, exist_ok=True)
     path = home / "deployment.lock"
+    # Lock the open file, not its existence. The OS releases this lock even
+    # after a killed process; never unlink it (other processes may have it open).
+    stream = path.open("a+b")
     try:
-        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        raise RuntimeError("Другая выкладка уже выполняется") from None
-    try:
-        os.close(descriptor)
+        stream.seek(0)
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as error:
+            import errno
+
+            if error.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                raise
+            raise RuntimeError("Другая выкладка уже выполняется") from None
         yield
     finally:
-        path.unlink()
+        stream.close()
 
 
 def deploy(folder, expected_commit, expected_run, *, preflight=False):
@@ -223,7 +267,7 @@ def deploy(folder, expected_commit, expected_run, *, preflight=False):
     services = existing_services()
     if not vault_ready():
         raise RuntimeError(
-            "Vault заблокирован. Выполните .\\start для разблокировки, затем повторите CD"
+            "Vault заблокирован. Выполните make start для разблокировки, затем повторите CD"
         )
     check_infrastructure(config, services)
     env = service_environment(services)
@@ -319,7 +363,13 @@ def resume(database=None):
 
     services = existing_services()
     subprocess.run(["docker", "start", services["vault"]["Id"]], check=True)
-    if not vault_ready():
+    print("Ожидание готовности Vault...")
+    status = wait_for_vault_response("http://127.0.0.1:8201/v1/sys/seal-status")
+    if not status["initialized"]:
+        raise RuntimeError(
+            "Vault не инициализирован; проверьте подключение прежнего тома данных"
+        )
+    if status["sealed"]:
         database = database or os.getenv("KEEPASS_DB")
         if not database and KEEPASS_PATH_FILE.is_file():
             database = KEEPASS_PATH_FILE.read_text(encoding="utf-8").strip()
@@ -328,24 +378,14 @@ def resume(database=None):
         store = KeePassCredentials(database, PROJECT, os.getenv("KEEPASS_KEY_FILE"))
         bootstrap = store.read()
         payload = json.dumps({"key": bootstrap["unseal_key"]}).encode()
-        deadline = time.monotonic() + 60
-        while True:
-            try:
-                request = urllib.request.Request(
-                    "http://127.0.0.1:8201/v1/sys/unseal",
-                    data=payload,
-                    headers={"Content-Type": "application/json"},
-                    method="PUT",
-                )
-                with urllib.request.urlopen(request, timeout=5) as response:
-                    sealed = json.load(response)["sealed"]
-                if sealed:
-                    raise RuntimeError("Vault не разблокирован")
-                break
-            except urllib.error.URLError:
-                if time.monotonic() >= deadline:
-                    raise RuntimeError("Vault недоступен") from None
-                time.sleep(2)
+        request = urllib.request.Request(
+            "http://127.0.0.1:8201/v1/sys/unseal",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="PUT",
+        )
+        if wait_for_vault_response(request)["sealed"]:
+            raise RuntimeError("Vault не разблокирован")
         KEEPASS_PATH_FILE.parent.mkdir(parents=True, exist_ok=True)
         KEEPASS_PATH_FILE.write_text(store.database, encoding="utf-8")
     for name in ["db", "kafka", *APPLICATION, *MONITORING]:

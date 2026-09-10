@@ -181,3 +181,85 @@ def test_consumer_acknowledges_only_successful_database_write(monkeypatch, fails
         offsets = consumer.commit.call_args.args[0]
         assert next(iter(offsets.values())).offset == 9
     consumer.close.assert_called_once()
+
+
+@pytest.mark.parametrize("queue_fails", [False, True])
+def test_failed_shadow_is_durably_queued_before_ack_and_next_message(
+    monkeypatch, queue_fails
+):
+    first = {**VALID_MESSAGE, "request_id": None}
+    second = {**VALID_MESSAGE, "patient_code": "TST002"}
+    records = [
+        SimpleNamespace(value=value, topic="predictions", partition=0, offset=i)
+        for i, value in enumerate([first, second])
+    ]
+    operations = []
+
+    class Consumer:
+        close = Mock()
+
+        def __iter__(self):
+            return iter(records)
+
+        def commit(self, offsets):
+            operations.append(("ack", next(iter(offsets.values())).offset))
+
+    def defer(message, versions):
+        assert versions == ["broken"]
+        assert message == first
+        if queue_fails:
+            raise RuntimeError("database unavailable")
+        operations.append(("queued", "broken"))
+
+    save = Mock()
+    monkeypatch.setattr(consumer_module, "create_consumer", Consumer)
+    monkeypatch.setattr(consumer_module, "save_message_to_database", save)
+    monkeypatch.setattr(
+        consumer_module,
+        "predict_challengers",
+        Mock(side_effect=[consumer_module.ShadowPredictionError(["broken"]), None]),
+    )
+    monkeypatch.setattr(consumer_module, "defer_predictions", defer)
+    if queue_fails:
+        with pytest.raises(RuntimeError, match="database unavailable"):
+            consumer_module.run()
+        assert operations == []
+        assert save.call_count == 1
+    else:
+        consumer_module.run()
+        assert operations == [("queued", "broken"), ("ack", 1), ("ack", 2)]
+        assert save.call_count == 2
+
+
+def test_duplicate_primary_prediction_still_defers_failed_shadow(monkeypatch):
+    from src.db.repositories import DuplicatePredictionError
+
+    class Consumer:
+        commit = Mock()
+        close = Mock()
+
+        def __iter__(self):
+            return iter(
+                [
+                    SimpleNamespace(
+                        value=VALID_MESSAGE, topic="predictions", partition=0, offset=0
+                    )
+                ]
+            )
+
+    defer = Mock()
+    monkeypatch.setattr(consumer_module, "create_consumer", Consumer)
+    monkeypatch.setattr(
+        consumer_module,
+        "save_message_to_database",
+        Mock(side_effect=DuplicatePredictionError()),
+    )
+    monkeypatch.setattr(
+        consumer_module,
+        "predict_challengers",
+        Mock(side_effect=consumer_module.ShadowPredictionError(["broken"])),
+    )
+    monkeypatch.setattr(consumer_module, "defer_predictions", defer)
+    consumer_module.run()
+    defer.assert_called_once_with(VALID_MESSAGE, ["broken"])
+    Consumer.commit.assert_called_once()

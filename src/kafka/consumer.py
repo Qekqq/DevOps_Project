@@ -15,7 +15,8 @@ from src.db.repositories import (
     require_model_version,
     save_prediction_history,
 )
-from src.kafka.shadow import predict_challengers
+from src.kafka.retries import defer_predictions, start_retry_worker
+from src.kafka.shadow import ShadowPredictionError, predict_challengers
 from src.logger import get_logger
 from src.secrets.vault_client import get_kafka_secrets
 from src.telemetry import CONSUMER_CONNECTED, DELIVERY, event, request_id, start_metrics
@@ -102,23 +103,31 @@ def run() -> None:
     try:
         for record in consumer:
             message = record.value
+            deferred = False
             correlation = message.get("request_id", "")
             request_id.set(
-                correlation if re.fullmatch(r"[a-f0-9]{32}", correlation) else ""
+                correlation
+                if isinstance(correlation, str)
+                and re.fullmatch(r"[a-f0-9]{32}", correlation)
+                else ""
             )
             try:
                 save_message_to_database(message)
             except DuplicatePredictionError:
                 event("duplicate_message_skipped")
-                predict_challengers(message)
             except StudyConflictError:
                 logger.info(
                     "Пропущено сообщение с показателями до исправления исследования"
                 )
-            else:
-                predict_challengers(message)
-            # Любая другая ошибка прерывает обработку без подтверждения offset.
-            # После перезапуска сообщение будет прочитано снова.
+                message = None
+            if message is not None:
+                try:
+                    predict_challengers(message)
+                except ShadowPredictionError as error:
+                    defer_predictions(message, error.versions)
+                    deferred = True
+            # Основной прогноз и задачи повторов уже в БД. Если БД недоступна,
+            # исключение прервёт обработку без подтверждения offset.
             consumer.commit(
                 {
                     TopicPartition(record.topic, record.partition): OffsetAndMetadata(
@@ -126,9 +135,12 @@ def run() -> None:
                     )
                 }
             )
-            event("prediction_processing_completed")
+            if not deferred:
+                event("prediction_processing_completed")
             try:
-                published = datetime.fromisoformat(message.get("created_at", ""))
+                published = datetime.fromisoformat(
+                    (message or {}).get("created_at", "") if not deferred else ""
+                )
                 DELIVERY.observe(
                     max(0, (datetime.now(timezone.utc) - published).total_seconds())
                 )
@@ -144,4 +156,8 @@ def run() -> None:
 
 if __name__ == "__main__":
     start_metrics()
-    run()
+    retry_stop = start_retry_worker()
+    try:
+        run()
+    finally:
+        retry_stop.set()
