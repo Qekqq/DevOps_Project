@@ -2,6 +2,9 @@
 
 import hashlib
 import json
+import re
+import shutil
+import subprocess
 from unittest.mock import MagicMock
 
 import pytest
@@ -159,6 +162,35 @@ def test_deploy_uses_no_build_preserves_infrastructure_and_records_success(
     for path in deploy.deployment_home().rglob("*.json"):
         assert "private-value" not in path.read_text()
         assert "db-password" not in path.read_text()
+
+
+def test_deployment_commands_use_supported_compose_flags(release, deployment):
+    if not shutil.which("docker"):
+        pytest.skip("Docker CLI is required to verify Compose flags")
+    execute, _ = deployment
+    deploy.deploy(release, SHA, "123")
+    help_by_command = {}
+    for call in execute.call_args_list:
+        command = call.args[2:]
+        verb = command[0]
+        if verb not in help_by_command:
+            result = subprocess.run(
+                ["docker", "compose", verb, "--help"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=True,
+            )
+            help_by_command[verb] = set(re.findall(r"(?<!\S)--?[\w-]+", result.stdout))
+        # Arguments after the service name belong to Python, not Compose.
+        options = (
+            command[1 : command.index("diabetes-api")] if verb == "run" else command[1:]
+        )
+        for option in options:
+            if option.startswith("-"):
+                assert option in help_by_command[verb], (verb, option)
+        if verb in ("run", "up"):
+            assert command[command.index("--pull") + 1] == "never"
 
 
 def test_failed_health_does_not_replace_last_successful_release(release, deployment):
