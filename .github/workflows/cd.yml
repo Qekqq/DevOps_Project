@@ -116,9 +116,20 @@ jobs:
         with:
           ref: ${{ needs.verify-release.outputs.sha }}
           persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+      - name: Проверка установленного Python без изменения Windows
+        run: |
+          if (-not $env:DEVOPS_DEPLOY_HOME) { throw 'Runner не настроен: отсутствует DEVOPS_DEPLOY_HOME' }
+          $deploymentPython = $env:DEVOPS_PYTHON
+          if (-not $deploymentPython) {
+            $projectRoot = Split-Path (Split-Path $env:DEVOPS_DEPLOY_HOME -Parent) -Parent
+            $deploymentPython = Join-Path $projectRoot '.venv\Scripts\python.exe'
+          }
+          if (-not (Test-Path -LiteralPath $deploymentPython -PathType Leaf)) {
+            throw 'Python не найден. Восстановите .venv или задайте DEVOPS_PYTHON при запуске runner.'
+          }
+          & $deploymentPython -c "import sys; assert sys.version_info >= (3, 11), 'Python 3.11+ is required'; print(sys.version)"
+          if ($LASTEXITCODE -ne 0) { throw 'Установленный Python не запускается; выкладка остановлена.' }
+          "DEPLOY_PYTHON=$deploymentPython" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - uses: actions/download-artifact@v4
         with:
           name: release-${{ needs.verify-release.outputs.sha }}
@@ -135,5 +146,5 @@ jobs:
           CI_RUN_ID: ${{ needs.verify-release.outputs.run_id }}
         run: |
           if (-not $env:DEVOPS_DEPLOY_HOME) { throw 'Runner не настроен: отсутствует DEVOPS_DEPLOY_HOME' }
-          python -m scripts.deploy_release --release release --commit $env:RELEASE_SHA --ci-run $env:CI_RUN_ID
+          & $env:DEPLOY_PYTHON -m scripts.deploy_release --release release --commit $env:RELEASE_SHA --ci-run $env:CI_RUN_ID
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
