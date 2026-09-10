@@ -100,6 +100,10 @@ jobs:
     runs-on: [self-hosted, Windows, X64, devops-production]
     timeout-minutes: 20
     environment: production
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+      PYTHONUNBUFFERED: "1"
     defaults:
       run:
         shell: powershell
@@ -119,6 +123,7 @@ jobs:
       - name: Проверка установленного Python без изменения Windows
         # Keep Windows PowerShell run blocks ASCII: runner writes UTF-8 without BOM.
         run: |
+          $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
           if (-not $env:DEVOPS_DEPLOY_HOME) { throw 'Runner is not configured: DEVOPS_DEPLOY_HOME is missing' }
           $deploymentPython = $env:DEVOPS_PYTHON
           if (-not $deploymentPython) {
@@ -141,11 +146,20 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Проверка локальной готовности без обновления приложения
+        env:
+          RELEASE_SHA: ${{ needs.verify-release.outputs.sha }}
+          CI_RUN_ID: ${{ needs.verify-release.outputs.run_id }}
+        run: |
+          $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+          & $env:DEPLOY_PYTHON -m scripts.deploy_release --release release --commit $env:RELEASE_SHA --ci-run $env:CI_RUN_ID --preflight
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Выкладка без локальной сборки
         env:
           RELEASE_SHA: ${{ needs.verify-release.outputs.sha }}
           CI_RUN_ID: ${{ needs.verify-release.outputs.run_id }}
         run: |
+          $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
           if (-not $env:DEVOPS_DEPLOY_HOME) { throw 'Runner is not configured: DEVOPS_DEPLOY_HOME is missing' }
           & $env:DEPLOY_PYTHON -m scripts.deploy_release --release release --commit $env:RELEASE_SHA --ci-run $env:CI_RUN_ID
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
