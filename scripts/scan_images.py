@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -52,11 +53,16 @@ def scan(image, directory):
             if remote
             else ["--input", "/work/image.tar"]
         )
+        # Linux bind mounts keep the runner's ownership. With all capabilities
+        # dropped, even container root cannot write to another user's 0755 folder.
+        # Docker Desktop handles Windows bind-mount ownership itself.
+        user = ["--user", f"{os.getuid()}:{os.getgid()}"] if os.name != "nt" else []
         subprocess.run(
             [
                 "docker",
                 "run",
                 "--rm",
+                *user,
                 "--read-only",
                 "--cap-drop=ALL",
                 "--security-opt=no-new-privileges",
