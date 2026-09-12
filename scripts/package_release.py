@@ -83,11 +83,11 @@ def package_release(
                 raise ValueError("Provide scanned monitoring images")
             service["image"] = monitoring_images[name]
         else:
-            subprocess.run(["docker", "pull", service["image"]], check=True)
             if "@sha256:" in service["image"]:
-                # Preserve the digest explicitly reviewed in Compose, even if
-                # Docker knows other repository digests for this same image.
+                # Already reviewed immutable references need no layer download
+                # just to write the release manifest.
                 continue
+            subprocess.run(["docker", "pull", service["image"]], check=True)
             digests = json.loads(
                 subprocess.check_output(
                     [

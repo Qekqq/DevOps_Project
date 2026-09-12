@@ -34,6 +34,45 @@ def test_new_build_context_file_cannot_be_silently_omitted_from_identity(root):
         cache.fingerprint("kafka", root)
 
 
+def test_windows_line_endings_reuse_the_same_published_recipe(root):
+    path = root / "vault/Dockerfile"
+    path.write_bytes(b"FROM base\nRUN build\n")
+    expected = cache.fingerprint("vault", root)
+    path.write_bytes(b"FROM base\r\nRUN build\r\n")
+    assert cache.fingerprint("vault", root) == expected
+
+
+def test_application_resolves_existing_recipes_without_build_pull_or_scan(
+    root, monkeypatch
+):
+    monkeypatch.setattr(cache, "registry_digest", lambda _: "sha256:" + "a" * 64)
+    monkeypatch.setattr(cache, "execute", lambda *a: pytest.fail("No Docker mutations"))
+    monkeypatch.setattr(
+        cache, "scan", lambda *a: pytest.fail("No infrastructure rescan")
+    )
+    state = cache.resolve("example/app", root=root)
+    assert set(state["images"]) == set(cache.INPUTS)
+    assert all(
+        i["reference"] == "example/app@sha256:" + "a" * 64
+        for i in state["images"].values()
+    )
+    with pytest.raises(ValueError, match="not a prepared"):
+        cache.validate(state, root=root)
+    with pytest.raises(ValueError, match="before publication"):
+        cache.publish(state, root=root)
+
+
+def test_missing_published_recipe_requires_manual_workflow_without_fallback(
+    root, monkeypatch
+):
+    monkeypatch.setattr(cache, "registry_digest", lambda _: None)
+    monkeypatch.setattr(
+        cache, "execute", lambda *a: pytest.fail("Must not build or pull")
+    )
+    with pytest.raises(RuntimeError, match="Infrastructure workflow"):
+        cache.resolve("example/app", root=root)
+
+
 def test_monitoring_group_tracks_its_own_builds_and_rejects_other_group(
     tmp_path, monkeypatch
 ):

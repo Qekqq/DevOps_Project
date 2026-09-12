@@ -533,6 +533,12 @@ def test_package_pins_images_and_has_no_build_context(tmp_path, monkeypatch, pin
         f"postgres:16@{DIGEST}" if pinned else f"postgres@{DIGEST}"
     )
     assert output.call_count == (1 if pinned else 2)
+    if pinned:
+        module.subprocess.run.assert_not_called()
+    else:
+        module.subprocess.run.assert_called_once_with(
+            ["docker", "pull", "postgres:16"], check=True
+        )
     assert len(manifest["files"]) == 4
     assert "current.json" in manifest["model_files"]
     assert not (folder / "models").exists()

@@ -1,0 +1,78 @@
+name: Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      group:
+        description: Группа образов для проверки и публикации
+        required: true
+        default: monitoring
+        type: choice
+        options:
+          - monitoring
+          - infrastructure
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Ручное обслуживание служебных образов
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    concurrency:
+      group: infrastructure-images-${{ github.repository }}
+      cancel-in-progress: false
+    env:
+      IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/devops_project
+      IMAGE_GROUP: ${{ inputs.group }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Место для первой сборки
+        # Only the disposable hosted runner; no application data is present.
+        run: |
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          df -h /
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Получение существующих образов или сборка изменившихся
+        run: python -m scripts.infrastructure_cache prepare --group "$IMAGE_GROUP" --repository "$IMAGE_NAME" --prune-build-cache
+      - name: Проверка уязвимостей
+        run: python -m scripts.infrastructure_cache scan --group "$IMAGE_GROUP"
+      - name: Проверка прокси Docker
+        run: |
+          docker compose pull docker-proxy
+          python - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
+          from scripts.scan_images import scan
+          config = json.loads(subprocess.check_output(["docker", "compose", "config", "--format", "json"]))
+          successful = True
+          for name in ("docker-proxy",):
+              image = config["services"][name]["image"]
+              reference = json.loads(subprocess.check_output(["docker", "image", "inspect", image]))[0]["RepoDigests"][0]
+              successful = scan(reference, Path(".local-history/security-scans/monitoring") / name) and successful
+          if not successful:
+              raise SystemExit("Monitoring image scan blocked publication")
+          PY
+
+      - name: Публикация успешно проверенных образов
+        run: python -m scripts.infrastructure_cache publish --group "$IMAGE_GROUP"
+      - name: Отчёты проверки
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: infrastructure-security-${{ inputs.group }}-${{ github.sha }}
+          path: |
+            .local-history/security-scans/**/report.json
+            .local-history/*-images.json
+          retention-days: 90

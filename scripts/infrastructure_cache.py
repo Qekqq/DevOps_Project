@@ -41,7 +41,8 @@ def fingerprint(name, root=ROOT, *, inputs=INPUTS):
             "New build context files require updating the infrastructure input list"
         )
     sources = {
-        n: hashlib.sha256((folder / n).read_bytes()).hexdigest()
+        # Build inputs are text. Match Git's Linux checkout even with CRLF on Windows.
+        n: hashlib.sha256((folder / n).read_bytes().replace(b"\r\n", b"\n")).hexdigest()
         for n in sorted(inputs[name])
     }
     sources["revision.txt"] = (root / "revision.txt").read_text().strip()
@@ -98,6 +99,33 @@ def local_id(reference):
     return value
 
 
+def resolve(repository, *, root=ROOT, inputs=INPUTS):
+    """Resolve already published recipes without pulling, building or scanning."""
+    if not re.fullmatch(r"[a-z0-9_-]+/[a-z0-9_.-]+", repository):
+        raise ValueError("Expected a Docker Hub namespace/repository")
+    images = {}
+    for name in inputs:
+        source = fingerprint(name, root, inputs=inputs)
+        tag = f"{repository}:infra-{name}-{source}"
+        digest = registry_digest(tag)
+        if not digest:
+            raise RuntimeError(
+                f"No published image for {name}. Run the Infrastructure workflow "
+                "for this branch first; application CI never builds infrastructure."
+            )
+        images[name] = {
+            "source": source,
+            "tag": tag,
+            "reference": repository + "@" + digest,
+        }
+    return {
+        "repository": repository,
+        "images": images,
+        "scanned": False,
+        "references_only": True,
+    }
+
+
 def prepare(repository, *, root=ROOT, inputs=INPUTS, prune_build_cache=False):
     if not re.fullmatch(r"[a-z0-9_-]+/[a-z0-9_.-]+", repository):
         raise ValueError("Expected a Docker Hub namespace/repository")
@@ -151,6 +179,8 @@ def prepare(repository, *, root=ROOT, inputs=INPUTS, prune_build_cache=False):
 
 
 def validate(state, *, root=ROOT, inputs=INPUTS):
+    if state.get("references_only"):
+        raise ValueError("Resolved references are not a prepared scan or publication")
     if set(state["images"]) != set(inputs):
         raise ValueError("Incomplete infrastructure image set")
     for name, item in state["images"].items():
@@ -207,7 +237,7 @@ def publish(state, *, root=ROOT, inputs=INPUTS):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["prepare", "scan", "publish"])
+    parser.add_argument("action", choices=["resolve", "prepare", "scan", "publish"])
     parser.add_argument("--repository")
     parser.add_argument(
         "--group", choices=["infrastructure", "monitoring"], default="infrastructure"
@@ -230,7 +260,9 @@ def main():
         if args.group == "infrastructure"
         else {"root": ROOT.parent / "monitoring", "inputs": MONITORING_INPUTS}
     )
-    if args.action == "prepare":
+    if args.action == "resolve":
+        state = resolve(args.repository or "", **options)
+    elif args.action == "prepare":
         state = prepare(
             args.repository or "", prune_build_cache=args.prune_build_cache, **options
         )

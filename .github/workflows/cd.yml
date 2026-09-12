@@ -85,15 +85,6 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Получение проверенных образов
         run: docker compose -f release/docker-compose.json pull
-      - name: Сканирование всего выпуска перед запуском
-        run: python -m scripts.scan_images --compose release/docker-compose.json
-      - name: Отчёты безопасности выпуска
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-security-${{ steps.release.outputs.sha }}
-          path: .local-history/security-scans/**/report.json
-          retention-days: 14
       - name: Запуск и интеграционные проверки
         run: python -m scripts.start_stack --ci --vault-tls --file-secrets --project devops_verify --no-build --check --release-dir release
       - name: Диагностика сервисов

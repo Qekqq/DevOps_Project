@@ -70,8 +70,7 @@ jobs:
     name: Сборка и публикация Docker-образа
     runs-on: ubuntu-latest
     needs: test
-    # The first Grafana backend build downloads and compiles the Go workspace.
-    timeout-minutes: 180
+    timeout-minutes: 45
     concurrency:
       group: infrastructure-images-${{ github.repository }}
       cancel-in-progress: false
@@ -81,13 +80,6 @@ jobs:
     steps:
       - name: Получение кода проекта
         uses: actions/checkout@v4
-
-      - name: Место для первой сборки мониторинга
-        # Only this disposable GitHub-hosted Linux job; these SDKs are unused.
-        run: |
-          test "$RUNNER_ENVIRONMENT" = github-hosted
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
-          df -h /
 
       - name: Настройка Python
         uses: actions/setup-python@v5
@@ -129,35 +121,11 @@ jobs:
         run: |
           python -m scripts.scan_images "$IMAGE_NAME:$IMAGE_TAG" "$IMAGE_NAME-frontend:$IMAGE_TAG" --output .local-history/security-scans/application
 
-      - name: Получение проверяемого мониторинга или его первая сборка
-        run: python -m scripts.infrastructure_cache prepare --group monitoring --repository "$IMAGE_NAME" --prune-build-cache
-
-      - name: Проверка образов мониторинга до публикации
-        run: python -m scripts.infrastructure_cache scan --group monitoring
-
-      - name: Получение проверяемой инфраструктуры или её первая сборка
-        run: python -m scripts.infrastructure_cache prepare --repository "$IMAGE_NAME"
-
-      - name: Проверка инфраструктуры до публикации
-        run: python -m scripts.infrastructure_cache scan
-
-      - name: Проверка прокси Docker
+      - name: Точные ссылки на опубликованный мониторинг и инфраструктуру
+        # Read registry manifests only; no layer download, build or rescan.
         run: |
-          docker compose pull docker-proxy
-          python - <<'PY'
-          import json
-          import subprocess
-          from pathlib import Path
-          from scripts.scan_images import scan
-          config = json.loads(subprocess.check_output(["docker", "compose", "config", "--format", "json"]))
-          successful = True
-          for name in ("docker-proxy",):
-              image = config["services"][name]["image"]
-              reference = json.loads(subprocess.check_output(["docker", "image", "inspect", image]))[0]["RepoDigests"][0]
-              successful = scan(reference, Path(".local-history/security-scans/monitoring") / name) and successful
-          if not successful:
-              raise SystemExit("Monitoring image scan blocked publication")
-          PY
+          python -m scripts.infrastructure_cache resolve --group monitoring --repository "$IMAGE_NAME"
+          python -m scripts.infrastructure_cache resolve --repository "$IMAGE_NAME"
 
       - name: Отчёты сканирования
         if: always()
@@ -172,8 +140,6 @@ jobs:
         run: |
           docker push "$IMAGE_NAME:$IMAGE_TAG"
           docker push "$IMAGE_NAME-frontend:$IMAGE_TAG"
-          python -m scripts.infrastructure_cache publish
-          python -m scripts.infrastructure_cache publish --group monitoring
           API_IMAGE=$(docker image inspect "$IMAGE_NAME:$IMAGE_TAG" --format '{{index .RepoDigests 0}}')
           FRONTEND_IMAGE=$(docker image inspect "$IMAGE_NAME-frontend:$IMAGE_TAG" --format '{{index .RepoDigests 0}}')
           GRAFANA_IMAGE=$(python -c 'import json; print(json.load(open(".local-history/monitoring-images.json"))["images"]["grafana"]["reference"])')
