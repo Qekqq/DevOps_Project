@@ -17,6 +17,7 @@ backups/
 .codex/
 .agents/
 data/feedback/
+models/
 
 __pycache__/
 *.pyc

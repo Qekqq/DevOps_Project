@@ -6,12 +6,25 @@ x-logging: &default-logging
     max-size: "10m"
     max-file: "3"
 
+x-runtime-security: &runtime-security
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=128m,mode=1777
+  pids_limit: 128
+  shm_size: 64m
+
 services:
   frontend:
+    networks: [edge]
+    <<: *runtime-security
+    mem_limit: 128m
+    cpus: 0.5
     build:
       context: ./frontend
     ports:
-      - "127.0.0.1:8080:80"
+      - "127.0.0.1:8080:8080"
     depends_on:
       diabetes-api:
         condition: service_started
@@ -19,6 +32,10 @@ services:
     restart: unless-stopped
 
   diabetes-api:
+    networks: [edge, default, monitoring]
+    <<: *runtime-security
+    mem_limit: 768m
+    cpus: 1.0
     build:
       context: .
       dockerfile: Dockerfile
@@ -32,11 +49,10 @@ services:
       VAULT_ROLE_ID: ${API_VAULT_ROLE_ID:-}
       VAULT_SECRET_ID: ${API_VAULT_SECRET_ID:-}
       VAULT_KV_MOUNT: secret
-      VAULT_DB_SECRET_PATH: database/postgres
+      VAULT_DB_SECRET_PATH: ${API_VAULT_DB_SECRET_PATH:-database/postgres}
       VAULT_KAFKA_SECRET_PATH: kafka/config
-    ports:
-      - "127.0.0.1:8001:8000"
     volumes:
+      - ./models:/app/models:ro
       - ./data/feedback:/app/data/feedback
       - application_logs:/app/logs
     depends_on:
@@ -50,6 +66,10 @@ services:
     restart: unless-stopped
 
   kafka-consumer:
+    networks: [default, monitoring]
+    <<: *runtime-security
+    mem_limit: 512m
+    cpus: 1.0
     build:
       context: .
       dockerfile: Dockerfile
@@ -61,10 +81,11 @@ services:
       VAULT_ROLE_ID: ${CONSUMER_VAULT_ROLE_ID:-}
       VAULT_SECRET_ID: ${CONSUMER_VAULT_SECRET_ID:-}
       VAULT_KV_MOUNT: secret
-      VAULT_DB_SECRET_PATH: database/postgres
+      VAULT_DB_SECRET_PATH: ${CONSUMER_VAULT_DB_SECRET_PATH:-database/postgres}
       VAULT_KAFKA_SECRET_PATH: kafka/config
     command: python -m src.kafka.consumer
     volumes:
+      - ./models:/app/models:ro
       - application_logs:/app/logs
     depends_on:
       db:
@@ -77,15 +98,17 @@ services:
     restart: unless-stopped
 
   metrics-exporter:
+    networks: [default, monitoring]
+    <<: *runtime-security
     build:
       context: .
     command: python -m src.metrics_exporter
     environment:
       APP_SERVICE: exporter
       VAULT_ADDR: http://vault:8200
-      VAULT_ROLE_ID: ${API_VAULT_ROLE_ID:-}
-      VAULT_SECRET_ID: ${API_VAULT_SECRET_ID:-}
-      VAULT_DB_SECRET_PATH: database/postgres
+      VAULT_ROLE_ID: ${EXPORTER_VAULT_ROLE_ID:-}
+      VAULT_SECRET_ID: ${EXPORTER_VAULT_SECRET_ID:-}
+      VAULT_DB_SECRET_PATH: ${EXPORTER_VAULT_DB_SECRET_PATH:-database/metrics}
     volumes:
       - application_logs:/app/logs
     depends_on:
@@ -99,7 +122,12 @@ services:
     restart: unless-stopped
 
   prometheus:
-    image: prom/prometheus:v3.13.3
+    networks: [monitoring]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    image: ${PROMETHEUS_IMAGE:-devops-prometheus:local}
+    build: ./monitoring/prometheus
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.retention.time=30d
@@ -116,7 +144,15 @@ services:
     restart: unless-stopped
 
   grafana:
-    image: grafana/grafana:13.2.1
+    networks: [edge, monitoring]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    image: ${GRAFANA_IMAGE:-devops-grafana:local}
+    build: ./monitoring/grafana
     environment:
       GF_SERVER_ROOT_URL: ${PUBLIC_ORIGIN:-http://localhost:8080}/grafana/
       GF_SERVER_SERVE_FROM_SUB_PATH: "true"
@@ -134,6 +170,7 @@ services:
       GF_SECURITY_ALLOW_EMBEDDING: "true"
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_LOG_MODE: console
     volumes:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana_data:/var/lib/grafana
@@ -152,7 +189,12 @@ services:
     restart: unless-stopped
 
   loki:
-    image: grafana/loki:3.7.7
+    networks: [monitoring]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    image: ${LOKI_IMAGE:-devops-loki:local}
+    build: ./monitoring/loki
     command: -config.file=/etc/loki/config.yml
     volumes:
       - ./monitoring/loki/config.yml:/etc/loki/config.yml:ro
@@ -163,10 +205,13 @@ services:
     restart: unless-stopped
 
   alloy:
-    image: grafana/alloy:v1.19.2
-    # cAdvisor читает cgroup контейнеров на Linux-хосте Docker.
-    privileged: true
-    cgroup: host
+    networks: [monitoring]
+    user: "473:473"
+    image: ${ALLOY_IMAGE:-devops-alloy:local}
+    build: ./monitoring/alloy
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
     environment:
       COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-devops_project}
     command:
@@ -178,11 +223,6 @@ services:
       - ./monitoring/alloy/config.alloy:/etc/alloy/config.alloy:ro
       - application_logs:/app/logs:ro
       - alloy_data:/var/lib/alloy
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - /:/rootfs:ro
-      - /sys:/sys:ro
-      - /var/lib/docker:/var/lib/docker:ro
-      - /run/containerd:/run/containerd:ro
     depends_on:
       - loki
     mem_limit: 384m
@@ -190,7 +230,47 @@ services:
     logging: *default-logging
     restart: unless-stopped
 
+  docker-stats:
+    <<: *runtime-security
+    build: .
+    networks: [monitoring, docker-observe]
+    environment:
+      APP_SERVICE: docker-stats
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-devops_project}
+    command: python -m src.docker_metrics_exporter
+    depends_on:
+      docker-proxy:
+        condition: service_healthy
+    mem_limit: 128m
+    cpus: 0.25
+    logging: *default-logging
+    restart: unless-stopped
+
+  docker-proxy:
+    <<: *runtime-security
+    image: nginxinc/nginx-unprivileged:stable-alpine@sha256:442753882674b49ae2c1de83ed67896131c0777f56df5005e356e62bc3f7e7ce
+    networks: [docker-observe]
+    user: "101:101"
+    group_add: ["${DOCKER_SOCKET_GID:-0}"]
+    entrypoint: ["nginx", "-c", "/etc/nginx/nginx.conf", "-g", "daemon off;"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:2375/_ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - ./monitoring/docker-proxy/nginx.conf:/etc/nginx/nginx.conf:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    mem_limit: 64m
+    cpus: 0.25
+    logging: *default-logging
+    restart: unless-stopped
+
   db:
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 256
+    shm_size: 128m
     # Keep persistent infrastructure identical in CI and production.
     # Updating these digests requires a separate infrastructure upgrade.
     image: postgres:16@sha256:081f1bc7bd5e143dbb6e487b710bbc27712cdcfaced4c071b8e47349aa1b4171
@@ -212,6 +292,9 @@ services:
       retries: 10
 
   vault:
+    mem_limit: 384m
+    cpus: 0.5
+    pids_limit: 128
     image: hashicorp/vault:1.17@sha256:74a4ab138ab5d64725e89cd9a9c73f7040c7fe49e98b71697b275ca9a69919df
     logging: *default-logging
     restart: unless-stopped
@@ -230,10 +313,14 @@ services:
       retries: 20
 
   kafka:
+    mem_limit: 1536m
+    cpus: 1.0
+    pids_limit: 256
     image: bitnamilegacy/kafka:3.7@sha256:c274f870840a5d854fb601408c398e596c795582d869b5d85c7f7d882e5c478d
     logging: *default-logging
     restart: unless-stopped
     environment:
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx512m
       KAFKA_CFG_NODE_ID: 1
       KAFKA_CFG_PROCESS_ROLES: broker,controller
       KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
@@ -251,6 +338,14 @@ services:
       interval: 10s
       timeout: 10s
       retries: 20
+
+networks:
+  default: {}
+  edge: {}
+  docker-observe:
+    internal: true
+  monitoring:
+    internal: true
 
 volumes:
   pgdata:

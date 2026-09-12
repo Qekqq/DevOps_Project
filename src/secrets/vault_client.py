@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 import hvac
 from requests import RequestException
@@ -28,7 +29,14 @@ def get_required_env(name: str) -> str:
     """
     Получает обязательную переменную окружения.
     """
-    value = os.getenv(name)
+    filename = os.getenv(name + "_FILE")
+    if filename:
+        try:
+            value = Path(filename).read_text(encoding="utf-8").strip()
+        except OSError:
+            raise VaultSecretError(f"Не удалось прочитать файл {name}") from None
+    else:
+        value = os.getenv(name)
 
     if not value:
         raise VaultSecretError(f"Не задана переменная окружения {name}")
@@ -41,7 +49,9 @@ def get_vault_client() -> hvac.Client:
     Создаёт клиент для подключения к Hashicorp Vault.
     """
     vault_addr = get_required_env("VAULT_ADDR")
-    client = hvac.Client(url=vault_addr)
+    client = hvac.Client(
+        url=vault_addr, timeout=10, verify=os.getenv("VAULT_CACERT") or True
+    )
     try:
         client.auth.approle.login(
             role_id=get_required_env("VAULT_ROLE_ID"),

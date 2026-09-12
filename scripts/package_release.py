@@ -8,13 +8,37 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from scripts.infrastructure_release import apply_images
+from scripts.model_delivery import inventory
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def package_release(output, commit, run_id, api_image, frontend_image):
+def package_release(
+    output,
+    commit,
+    run_id,
+    api_image,
+    frontend_image,
+    infrastructure_images=None,
+    grafana_image=None,
+    monitoring_images=None,
+):
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("Ожидается полный SHA коммита")
-    for image in (api_image, frontend_image):
+    if monitoring_images is not None and set(monitoring_images) != {
+        "prometheus",
+        "loki",
+        "alloy",
+    }:
+        raise ValueError("All three monitoring images are required")
+    for image in (
+        api_image,
+        frontend_image,
+        *(infrastructure_images or {}).values(),
+        *(monitoring_images or {}).values(),
+        *([grafana_image] if grafana_image else []),
+    ):
         if not re.fullmatch(r"[a-z0-9./_-]+@sha256:[0-9a-f]{64}", image):
             raise ValueError("Образы приложения должны быть указаны по digest")
     config = json.loads(
@@ -35,12 +59,29 @@ def package_release(output, commit, run_id, api_image, frontend_image):
             encoding="utf-8",
         )
     )
+    if infrastructure_images is not None:
+        apply_images(config, infrastructure_images)
     for name, service in config["services"].items():
         service.pop("build", None)
-        if name in ("diabetes-api", "kafka-consumer", "metrics-exporter"):
+        if name in (
+            "diabetes-api",
+            "kafka-consumer",
+            "metrics-exporter",
+            "docker-stats",
+        ):
             service["image"] = api_image
         elif name == "frontend":
             service["image"] = frontend_image
+        elif name == "grafana":
+            if not grafana_image:
+                raise ValueError(
+                    "Укажите проверенный образ Grafana с источником метрик"
+                )
+            service["image"] = grafana_image
+        elif name in {"prometheus", "loki", "alloy"}:
+            if not monitoring_images:
+                raise ValueError("Provide scanned monitoring images")
+            service["image"] = monitoring_images[name]
         else:
             subprocess.run(["docker", "pull", service["image"]], check=True)
             if "@sha256:" in service["image"]:
@@ -76,6 +117,10 @@ def package_release(output, commit, run_id, api_image, frontend_image):
         if path.is_file()
     }
     manifest = {"commit": commit, "ci_run_id": str(run_id), "files": hashes}
+    if infrastructure_images is not None:
+        manifest["infrastructure_generation"] = 2
+    # Hashes may be public; model bytes must stay in the authenticated DVC store.
+    manifest["model_files"] = inventory(ROOT / "models")
     (output / "release.json").write_text(
         json.dumps(manifest, indent=2), encoding="utf-8"
     )
@@ -88,7 +133,29 @@ if __name__ == "__main__":
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--api-image", required=True)
     parser.add_argument("--frontend-image", required=True)
+    parser.add_argument("--grafana-image", required=True)
+    parser.add_argument("--prometheus-image", required=True)
+    parser.add_argument("--loki-image", required=True)
+    parser.add_argument("--alloy-image", required=True)
+    parser.add_argument("--postgres-image", required=True)
+    parser.add_argument("--vault-image", required=True)
+    parser.add_argument("--kafka-image", required=True)
     args = parser.parse_args()
     package_release(
-        args.output, args.commit, args.run_id, args.api_image, args.frontend_image
+        args.output,
+        args.commit,
+        args.run_id,
+        args.api_image,
+        args.frontend_image,
+        {
+            "db": args.postgres_image,
+            "vault": args.vault_image,
+            "kafka": args.kafka_image,
+        },
+        grafana_image=args.grafana_image,
+        monitoring_images={
+            "prometheus": args.prometheus_image,
+            "loki": args.loki_image,
+            "alloy": args.alloy_image,
+        },
     )

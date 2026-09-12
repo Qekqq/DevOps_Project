@@ -95,8 +95,17 @@ def test_resume_waits_for_vault_and_retries_unseal_after_disconnect(
         ]
     )
     monkeypatch.setattr(deploy.urllib.request, "urlopen", request)
+    connection = MagicMock(url="https://127.0.0.1:8201/v1/")
+    connection.opener.open = request
+    monkeypatch.setattr(deploy, "installed_connection", lambda services: connection)
     deploy.resume(str(database))
     assert request.call_count == 4
+    assert all(
+        (
+            call.args[0].full_url if hasattr(call.args[0], "full_url") else call.args[0]
+        ).startswith("https://127.0.0.1:8201/")
+        for call in request.call_args_list
+    )
     credentials.assert_called_once()
     health.assert_called_once()
     assert execute.call_args_list[0].args[0] == ["docker", "start", "vault-id"]
@@ -143,7 +152,7 @@ def services():
         name: {"Id": f"{name}-container-id", "Image": name, "State": {"Running": True}}
         for name in deploy.INFRASTRUCTURE
     }
-    for name in ("diabetes-api", "kafka-consumer"):
+    for name in ("diabetes-api", "kafka-consumer", "metrics-exporter"):
         result[name] = {
             "Config": {"Env": ["VAULT_ROLE_ID=role", "VAULT_SECRET_ID=private-value"]}
         }
@@ -215,7 +224,7 @@ def test_existing_credentials_are_passed_only_in_environment(services, monkeypat
 def deployment(release, services, tmp_path, monkeypatch):
     monkeypatch.setenv("DEVOPS_DEPLOY_HOME", str(tmp_path / "deployment"))
     monkeypatch.setattr(deploy, "existing_services", lambda: services)
-    monkeypatch.setattr(deploy, "vault_ready", lambda: True)
+    monkeypatch.setattr(deploy, "vault_ready", lambda services: True)
     monkeypatch.setattr(
         deploy,
         "docker_json",
@@ -226,6 +235,7 @@ def deployment(release, services, tmp_path, monkeypatch):
     execute = MagicMock()
     health = MagicMock()
     monkeypatch.setattr(deploy, "compose", execute)
+    monkeypatch.setattr(deploy, "run_maintenance", MagicMock())
     monkeypatch.setattr(deploy, "check_application", health)
     monkeypatch.setattr(
         deploy,
@@ -299,7 +309,7 @@ def test_failed_health_does_not_replace_last_successful_release(release, deploym
 
 def test_sealed_vault_does_not_change_containers(release, deployment, monkeypatch):
     execute, _ = deployment
-    monkeypatch.setattr(deploy, "vault_ready", lambda: False)
+    monkeypatch.setattr(deploy, "vault_ready", lambda services: False)
     with pytest.raises(RuntimeError, match="Vault заблокирован"):
         deploy.deploy(release, SHA, "123")
     execute.assert_not_called()
@@ -370,11 +380,13 @@ def test_backup_precedes_every_database_change_and_container_update(
 
     deploy.create_database_backup.side_effect = backup
     execute.side_effect = lambda *args: events.append(args[2])
+    deploy.run_maintenance.side_effect = lambda *args: events.append("maintenance")
     deploy.deploy(release, SHA, "123")
     deploy.create_database_backup.assert_called_once_with(
         deploy.deployment_home() / "backups", container="db-container-id"
     )
     assert events.index("backup") < events.index("run") < events.index("up")
+    assert events.index("backup") < events.index("maintenance") < events.index("up")
     state = json.loads((deploy.deployment_home() / "current.json").read_text())
     assert state["database_backup"] == str(backup_path)
 
@@ -388,7 +400,45 @@ def test_failed_backup_blocks_database_changes_and_container_update(
         deploy.deploy(release, SHA, "123")
     assert not any(call.args[2] in ("run", "up") for call in execute.call_args_list)
     health.assert_not_called()
+    deploy.run_maintenance.assert_not_called()
     assert not (deploy.deployment_home() / "current.json").exists()
+
+
+@pytest.mark.parametrize("memory_available", [True, False])
+def test_readiness_uses_technical_exporter_without_ml_collection(
+    monkeypatch, memory_available
+):
+    from io import BytesIO
+
+    def response(address, **kwargs):
+        body = (
+            b"diabetes_consumer_connected 1.0\n"
+            if "9101" in address
+            else b"diabetes_container_memory_bytes 2048\n"
+            if memory_available
+            else b""
+        )
+        result = BytesIO(body)
+        result.status = 200
+        return result
+
+    def run(command, **kwargs):
+        try:
+            exec(command[-1], {})
+            code = 0
+        except AssertionError:
+            code = 1
+        return subprocess.CompletedProcess(command, code)
+
+    monkeypatch.setattr(deploy.urllib.request, "urlopen", response)
+    monkeypatch.setattr(deploy.subprocess, "run", run)
+    monkeypatch.setattr(deploy.time, "monotonic", MagicMock(side_effect=[0, 0, 121]))
+    monkeypatch.setattr(deploy.time, "sleep", lambda _: None)
+    if memory_available:
+        deploy.check_application()
+    else:
+        with pytest.raises(RuntimeError, match="готовность"):
+            deploy.check_application()
 
 
 def test_deployment_lock_blocks_overlapping_manual_and_ci_update(tmp_path):
@@ -441,11 +491,18 @@ def test_package_pins_images_and_has_no_build_context(tmp_path, monkeypatch, pin
     for name in ("monitoring", "vault", "db"):
         (root / name).mkdir(parents=True)
         (root / name / "config.txt").write_text("settings")
+    (root / "models").mkdir()
+    (root / "models/current.json").write_text("{}")
     monkeypatch.setattr(module, "ROOT", root)
     config = {
         "services": {
             "frontend": {"build": {"context": "frontend"}},
             "diabetes-api": {"build": {"context": "."}},
+            "docker-stats": {"build": {"context": "."}},
+            "grafana": {"build": {"context": "monitoring/grafana"}},
+            "prometheus": {"build": {"context": "monitoring/prometheus"}},
+            "loki": {"build": {"context": "monitoring/loki"}},
+            "alloy": {"build": {"context": "monitoring/alloy"}},
             "db": {"image": f"postgres:16@{DIGEST}" if pinned else "postgres:16"},
         }
     }
@@ -456,11 +513,26 @@ def test_package_pins_images_and_has_no_build_context(tmp_path, monkeypatch, pin
     monkeypatch.setattr(module.subprocess, "run", MagicMock())
     folder = tmp_path / "release"
     package_release(
-        folder, SHA, "123", f"example/api@{DIGEST}", f"example/frontend@{DIGEST}"
+        folder,
+        SHA,
+        "123",
+        f"example/api@{DIGEST}",
+        f"example/frontend@{DIGEST}",
+        grafana_image=f"example/grafana@{DIGEST}",
+        monitoring_images={
+            name: f"example/{name}@{DIGEST}" for name in ("prometheus", "loki", "alloy")
+        },
     )
     manifest, actual = deploy.read_release(folder, SHA, "123")
+    assert actual["services"]["docker-stats"]["image"] == f"example/api@{DIGEST}"
+    assert actual["services"]["grafana"]["image"] == f"example/grafana@{DIGEST}"
+    for name in ("prometheus", "loki", "alloy"):
+        assert actual["services"][name]["image"] == f"example/{name}@{DIGEST}"
+        assert "build" not in actual["services"][name]
     assert actual["services"]["db"]["image"] == (
         f"postgres:16@{DIGEST}" if pinned else f"postgres@{DIGEST}"
     )
     assert output.call_count == (1 if pinned else 2)
     assert len(manifest["files"]) == 4
+    assert "current.json" in manifest["model_files"]
+    assert not (folder / "models").exists()

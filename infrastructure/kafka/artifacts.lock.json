@@ -1,0 +1,102 @@
+[
+  {
+    "file": "jackson-core-2.21.4.jar",
+    "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-core/2.21.4/jackson-core-2.21.4.jar",
+    "sha512": "61ae58e91d7773ee5afca6f51ffd3dd419017f6871a58825fec1f88badd9274d14fca81821a89b842f6f7467339797dfcf1e94051fdcfec6725fc4e50ad6a546"
+  },
+  {
+    "file": "jackson-databind-2.21.4.jar",
+    "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-databind/2.21.4/jackson-databind-2.21.4.jar",
+    "sha512": "11df9de9e69c0261b206a6c9add1d995af2e0711f895e2c8521d6bd2bb555671af0c3709931f9fa8abf987df9f37f46b891ea7b86d6edc3f437c43a757db45e7"
+  },
+  {
+    "file": "jackson-dataformat-csv-2.21.4.jar",
+    "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/dataformat/jackson-dataformat-csv/2.21.4/jackson-dataformat-csv-2.21.4.jar",
+    "sha512": "dd3103a5c09f11d61636634bd1f21da987b7f92c27c358c525241c3d4859dbb26d28a24c929ec776ee95b2be9296816c3393028c23ed05fcd07aa6c42d4ea85b"
+  },
+  {
+    "file": "jackson-dataformat-yaml-2.21.4.jar",
+    "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/dataformat/jackson-dataformat-yaml/2.21.4/jackson-dataformat-yaml-2.21.4.jar",
+    "sha512": "38584504be298e13c811ff19aeeb4257400f979d44427f38b55f76b6e0cd1d8a1cdbe627d93899099d7fd468fcdbee196feb1760a2f7128adbf88acaf499b364"
+  },
+  {
+    "file": "jackson-datatype-jdk8-2.21.4.jar",
+    "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/datatype/jackson-datatype-jdk8/2.21.4/jackson-datatype-jdk8-2.21.4.jar",
+    "sha512": "3a465c52167d2c5c42409013dcd106b0412849793d0f988d72772de0e1829ad498d50c5682c41c40420ce27f3bd9553b1b35fdb84315e8531f22f8d250069aa6"
+  },
+  {
+    "file": "jackson-jakarta-rs-base-2.21.4.jar",
+    "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/jakarta/rs/jackson-jakarta-rs-base/2.21.4/jackson-jakarta-rs-base-2.21.4.jar",
+    "sha512": "6abcd1425350b2522ef9d32e29ed48318a2acab1392b02a394aefacf152d76cb37289f0e80aca8812ac6b3b64de33b895b4e703b7de88ac9e0c19f461c343430"
+  },
+  {
+    "file": "jackson-jakarta-rs-json-provider-2.21.4.jar",
+    "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/jakarta/rs/jackson-jakarta-rs-json-provider/2.21.4/jackson-jakarta-rs-json-provider-2.21.4.jar",
+    "sha512": "31a59d4fe79cfc95a8e9d8f859a38950fce2244ecd963abda42d60e2bbe5d2cd29e7b122e098839df38589c608147e86c4e6b8a827953426c98f8ca67a63e539"
+  },
+  {
+    "file": "jackson-module-blackbird-2.21.4.jar",
+    "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/module/jackson-module-blackbird/2.21.4/jackson-module-blackbird-2.21.4.jar",
+    "sha512": "6e0f9f9aec11891eeff07e865353833137c683082a801ae0b9e54dcd8fdc24b5bbbfebb14a93849c61ff653ff8e8c7bccff63320a13bd929682101efc5940fe3"
+  },
+  {
+    "file": "jackson-module-jakarta-xmlbind-annotations-2.21.4.jar",
+    "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/module/jackson-module-jakarta-xmlbind-annotations/2.21.4/jackson-module-jakarta-xmlbind-annotations-2.21.4.jar",
+    "sha512": "faf14ca765f3df2d2ebd49ea48a407ff18820751c7f2ff66393a6f46bd1b17e2f65f0e8fb67090187d744c1064ba7c489a3c8e9d56a4b7a9eb25d4cbc895c63e"
+  },
+  {
+    "file": "jetty-alpn-client-12.0.36.jar",
+    "url": "https://repo.maven.apache.org/maven2/org/eclipse/jetty/jetty-alpn-client/12.0.36/jetty-alpn-client-12.0.36.jar",
+    "sha512": "c3ed9acefcacd8da3bac3d2999be6cb664c594eaa7d51d6305785d7ef42d63793e836cfd1bd468a9a512e7f4d1bfd1da7f11df27d85fb68a6b5e1348957e27be"
+  },
+  {
+    "file": "jetty-client-12.0.36.jar",
+    "url": "https://repo.maven.apache.org/maven2/org/eclipse/jetty/jetty-client/12.0.36/jetty-client-12.0.36.jar",
+    "sha512": "0e2b6d78fa878d24ef8993ad3640bee995961c5c222660740a266f91487f41a8f2e61336519d08d19fe4330bf8b580c3803d6e63be93a5d35a2c1aa351f1f84e"
+  },
+  {
+    "file": "jetty-http-12.0.36.jar",
+    "url": "https://repo.maven.apache.org/maven2/org/eclipse/jetty/jetty-http/12.0.36/jetty-http-12.0.36.jar",
+    "sha512": "2b953c0cb2787c7be6646601adf9ee1e56e28a217cba85844ca0088b96c0b60db82a1132b3b8093932db27611d4bff6e9d8b1c6ad654985b9456b754fe561f8d"
+  },
+  {
+    "file": "jetty-io-12.0.36.jar",
+    "url": "https://repo.maven.apache.org/maven2/org/eclipse/jetty/jetty-io/12.0.36/jetty-io-12.0.36.jar",
+    "sha512": "84571a264343cdb6ddbe2b45be61a81ae94215f2daecbbc07f9b38696a68ed8048c422524a9b121dd71f2d5517fe06f06836e0d52bbbea068034d240b88dd704"
+  },
+  {
+    "file": "jetty-security-12.0.36.jar",
+    "url": "https://repo.maven.apache.org/maven2/org/eclipse/jetty/jetty-security/12.0.36/jetty-security-12.0.36.jar",
+    "sha512": "796f2eee838d699731be2980c1b3a971f8311be156f4202d3146fddcdfa69fded33b8a425946a4c187fcf31b989ba489a797b3aca60ac3ae03e839b114256a57"
+  },
+  {
+    "file": "jetty-server-12.0.36.jar",
+    "url": "https://repo.maven.apache.org/maven2/org/eclipse/jetty/jetty-server/12.0.36/jetty-server-12.0.36.jar",
+    "sha512": "76bdfcd94630e6e040fe88d3464551bbe27fb9fe8a3d1628037d97b47cf8e0cbf107fcbb064478d703734d7726862bae46a97b49790998fcd00b3bad1ffd8669"
+  },
+  {
+    "file": "jetty-session-12.0.36.jar",
+    "url": "https://repo.maven.apache.org/maven2/org/eclipse/jetty/jetty-session/12.0.36/jetty-session-12.0.36.jar",
+    "sha512": "b8693d64114debad9aefff51dc62b587db6f00afdeb9d21f5ce3a721652f821802d13ffd56239677e8c6ddcd4bd7ebb7de691b6d6c98c35a45bc19bb7055d332"
+  },
+  {
+    "file": "jetty-util-12.0.36.jar",
+    "url": "https://repo.maven.apache.org/maven2/org/eclipse/jetty/jetty-util/12.0.36/jetty-util-12.0.36.jar",
+    "sha512": "7349ce5f763dd08652ed41b4ac29d830aae3a442f16d30c44f201d675578737f971ab62f4fad90df160e7fa498ca30a8e7ef788cba5698c4b36e74aa74e8c13c"
+  },
+  {
+    "file": "jetty-ee10-servlet-12.0.36.jar",
+    "url": "https://repo.maven.apache.org/maven2/org/eclipse/jetty/ee10/jetty-ee10-servlet/12.0.36/jetty-ee10-servlet-12.0.36.jar",
+    "sha512": "94ac0054630ecb5852234eac429bb3e5118f047b3a89143c2da8de3c722ff19fc0e59b041151c136bf3e4463fb9bb76cc4482dd2afa104329f395cff4b4a60e6"
+  },
+  {
+    "file": "jetty-ee10-servlets-12.0.36.jar",
+    "url": "https://repo.maven.apache.org/maven2/org/eclipse/jetty/ee10/jetty-ee10-servlets/12.0.36/jetty-ee10-servlets-12.0.36.jar",
+    "sha512": "7188c88bfd84d729e961c178f9fa782bbde4640d57d3564d09c68201fc4ebf4d9671c85d08617b92e5ad786df2e95670e0caa246b05319884f96cfbf2b93536d"
+  },
+  {
+    "file": "jline-3.30.14.jar",
+    "url": "https://repo.maven.apache.org/maven2/org/jline/jline/3.30.14/jline-3.30.14.jar",
+    "sha512": "9dedc3984bea84f7ef653fb9e6c03e7c16f705754c455643d0a35ad9c71930435ec6a057c6d1cebdf42485f4a6c95aefff5c3ef7df65089a93e5db4d8f6f385d"
+  }
+]

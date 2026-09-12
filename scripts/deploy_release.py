@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import ssl
 import subprocess
 import time
 import urllib.error
@@ -15,11 +16,20 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from scripts.backup_database import create_database_backup
+from scripts.maintenance_client import installed_admin_credentials, run_maintenance
+from scripts.model_delivery import stage_models
+from scripts.vault_connection import (
+    host_bind_source,
+    installed_connection,
+    preserve_transport,
+)
+from scripts.vault_identity import preserve_identities
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT = "devops_project"
 APPLICATION = ["diabetes-api", "kafka-consumer", "metrics-exporter", "frontend"]
 MONITORING = ["loki", "prometheus", "grafana", "alloy"]
+OPTIONAL_MONITORING = ["docker-proxy", "docker-stats"]
 INFRASTRUCTURE = ["vault", "db", "kafka"]
 HTTP_CONNECTION_ERRORS = (
     urllib.error.URLError,
@@ -74,7 +84,15 @@ def docker_json(*arguments):
 
 def existing_services():
     result = {}
-    for service in INFRASTRUCTURE + APPLICATION + MONITORING:
+    optional = []
+    for name in OPTIONAL_MONITORING:
+        ids = subprocess.check_output(
+            ["docker", "ps", "-aq", "--filter", f"name=^/{PROJECT}-{name}-1$"],
+            text=True,
+        ).strip()
+        if ids:
+            optional.append(name)
+    for service in INFRASTRUCTURE + APPLICATION + MONITORING + optional:
         container = docker_json("inspect", f"{PROJECT}-{service}-1")[0]
         if container["Config"]["Labels"].get("com.docker.compose.project") != PROJECT:
             raise RuntimeError("Контейнер принадлежит другому проекту")
@@ -84,17 +102,47 @@ def existing_services():
 
 def service_environment(services):
     env = dict(os.environ, COMPOSE_DISABLE_ENV_FILE="1")
+    for prefix in ("API", "CONSUMER", "EXPORTER"):
+        for suffix in ("ROLE_ID", "SECRET_ID"):
+            env.pop(f"{prefix}_VAULT_{suffix}", None)
+    socket_groups = (
+        services.get("docker-proxy", {}).get("HostConfig", {}).get("GroupAdd")
+    )
+    if socket_groups:
+        env["DOCKER_SOCKET_GID"] = socket_groups[0]
     for service, prefix in (("diabetes-api", "API"), ("kafka-consumer", "CONSUMER")):
         values = dict(
             item.split("=", 1)
             for item in services[service]["Config"]["Env"]
             if "=" in item
         )
+        env[f"{prefix}_VAULT_DB_SECRET_PATH"] = values.get(
+            "VAULT_DB_SECRET_PATH", "database/postgres"
+        )
         for suffix in ("ROLE_ID", "SECRET_ID"):
+            if values.get("VAULT_" + suffix + "_FILE"):
+                continue
             value = values.get("VAULT_" + suffix)
             if not value:
                 raise RuntimeError("Сервис ещё не настроен для входа в Vault")
             env[f"{prefix}_VAULT_{suffix}"] = value
+    # Preserve a dedicated exporter identity once provisioned. Older installations
+    # retain their existing identity until the explicit Vault role migration.
+    exporter = services.get("metrics-exporter", {}).get("Config", {}).get("Env", [])
+    exporter_env = dict(item.split("=", 1) for item in exporter if "=" in item)
+    env["EXPORTER_VAULT_DB_SECRET_PATH"] = exporter_env.get(
+        "VAULT_DB_SECRET_PATH", "database/postgres"
+    )
+    for suffix in ("ROLE_ID", "SECRET_ID"):
+        if exporter_env.get("VAULT_" + suffix + "_FILE"):
+            continue
+        env[f"EXPORTER_VAULT_{suffix}"] = exporter_env.get(
+            "VAULT_" + suffix
+        ) or env.get(f"API_VAULT_{suffix}", "")
+        if not env[f"EXPORTER_VAULT_{suffix}"]:
+            raise RuntimeError(
+                "Exporter AppRole identity is missing; complete its migration"
+            )
     values = dict(
         item.split("=", 1) for item in services["db"]["Config"]["Env"] if "=" in item
     )
@@ -113,6 +161,41 @@ def service_environment(services):
 
 def configure_runtime(config, folder, services):
     config = json.loads(json.dumps(config))
+    # A completed infrastructure migration may use new explicitly named volumes.
+    # Carry those mounts forward instead of reverting to the old Compose names.
+    paths = {
+        "db": ("pgdata", "/var/lib/postgresql/data"),
+        "vault": ("vault_data", "/vault/file"),
+        "kafka": ("kafka_data", "/bitnami/kafka"),
+    }
+    for name, (logical, target) in paths.items():
+        if name not in config["services"] or name not in services:
+            continue
+        mounts = [
+            m for m in services[name].get("Mounts", []) if m["Destination"] == target
+        ]
+        if not mounts:
+            continue
+        if len(mounts) != 1 or mounts[0]["Type"] != "volume":
+            raise RuntimeError("Unexpected installed infrastructure data mount")
+        config.setdefault("volumes", {})[logical] = {
+            "name": mounts[0]["Name"],
+            "external": True,
+        }
+        for mount in config["services"][name].get("volumes", []):
+            if mount["target"] == target:
+                mount.update(type="volume", source=logical)
+    kafka = services.get("kafka")
+    if kafka and "kafka" in config["services"]:
+        settings = dict(
+            item.split("=", 1)
+            for item in kafka.get("Config", {}).get("Env", [])
+            if "=" in item
+        )
+        if settings.get("CLUSTER_ID"):
+            config["services"]["kafka"].setdefault("environment", {})["CLUSTER_ID"] = (
+                settings["CLUSTER_ID"]
+            )
     feedback = next(
         mount
         for mount in services["diabetes-api"]["Mounts"]
@@ -124,7 +207,9 @@ def configure_runtime(config, folder, services):
                 mount["source"] = str((folder / mount["source"]).resolve())
     for mount in config["services"]["diabetes-api"]["volumes"]:
         if mount["target"] == "/app/data/feedback":
-            mount["source"] = feedback["Source"]
+            mount["source"] = host_bind_source(feedback["Source"])
+    preserve_transport(config, services)
+    preserve_identities(config, services, PROJECT)
     return config
 
 
@@ -136,22 +221,31 @@ def compose(path, env, *arguments):
     )
 
 
-def vault_ready():
+def vault_ready(services):
+    connection = installed_connection(services)
     try:
-        with urllib.request.urlopen(
-            "http://127.0.0.1:8201/v1/sys/health", timeout=5
+        with connection.opener.open(
+            connection.url + "sys/health", timeout=5
         ) as response:
             return response.status == 200
-    except HTTP_CONNECTION_ERRORS:
+    except HTTP_CONNECTION_ERRORS as error:
+        if isinstance(error, urllib.error.URLError) and isinstance(
+            error.reason, ssl.SSLCertVerificationError
+        ):
+            raise RuntimeError(
+                "Vault TLS certificate verification failed; trust settings were not changed"
+            ) from None
         return False
 
 
-def wait_for_vault_response(request, timeout=60):
+def wait_for_vault_response(request, timeout=60, *, opener=None):
     """Ждёт HTTP API после запуска контейнера, включая ранний обрыв соединения."""
     deadline = time.monotonic() + timeout
     while True:
         try:
-            with urllib.request.urlopen(request, timeout=5) as response:
+            with (opener.open if opener else urllib.request.urlopen)(
+                request, timeout=5
+            ) as response:
                 return json.load(response)
         except urllib.error.HTTPError as error:
             if error.code < 500:
@@ -159,7 +253,13 @@ def wait_for_vault_response(request, timeout=60):
                 raise RuntimeError(
                     f"Vault отклонил запрос (HTTP {error.code}); проверьте настройки и ключи"
                 ) from None
-        except HTTP_CONNECTION_ERRORS:
+        except HTTP_CONNECTION_ERRORS as error:
+            if isinstance(error, urllib.error.URLError) and isinstance(
+                error.reason, ssl.SSLCertVerificationError
+            ):
+                raise RuntimeError(
+                    "Vault TLS certificate verification failed; trust settings were not changed"
+                ) from None
             pass
         if time.monotonic() >= deadline:
             raise RuntimeError(
@@ -200,7 +300,7 @@ def check_application():
     while time.monotonic() < deadline:
         try:
             for address in (
-                "http://127.0.0.1:8001/db/health",
+                "http://127.0.0.1:8080/api/db/health",
                 "http://127.0.0.1:8080/healthz",
             ):
                 with urllib.request.urlopen(address, timeout=5) as response:
@@ -215,7 +315,7 @@ def check_application():
                     "-c",
                     "import urllib.request; "
                     "checks=[('http://kafka-consumer:9101/metrics','diabetes_consumer_connected 1.0'),"
-                    "('http://metrics-exporter:9100/metrics','diabetes_quality_collection_success 1.0')]; "
+                    "('http://metrics-exporter:9100/metrics','diabetes_container_memory_bytes ')]; "
                     "assert all(marker in urllib.request.urlopen(url,timeout=5).read().decode() for url,marker in checks)",
                 ],
                 capture_output=True,
@@ -234,7 +334,7 @@ def check_application():
 
 
 @contextmanager
-def deployment_lock(home):
+def deployment_lock(home, *, allow_pending_migration=False):
     home.mkdir(parents=True, exist_ok=True)
     path = home / "deployment.lock"
     # Lock the open file, not its existence. The OS releases this lock even
@@ -257,22 +357,81 @@ def deployment_lock(home):
             if error.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
                 raise
             raise RuntimeError("Другая выкладка уже выполняется") from None
+        if (
+            not allow_pending_migration
+            and (home / "security-migration.pending.json").exists()
+        ):
+            raise RuntimeError(
+                "Не завершён перенос безопасности. Сначала выполните ручное восстановление; make start и CD приостановлены"
+            )
         yield
     finally:
         stream.close()
 
 
+def prepare_application_storage(runtime_path, env, services):
+    # Existing volumes may contain root-owned logs from earlier releases.
+    # Restrict ownership changes to the two application data mounts.
+    compose(
+        runtime_path,
+        env,
+        "run",
+        "--rm",
+        "--no-deps",
+        "--pull",
+        "never",
+        "--user",
+        "0:0",
+        "--cap-add",
+        "CHOWN",
+        "--cap-add",
+        "DAC_OVERRIDE",
+        "diabetes-api",
+        "python",
+        "-c",
+        "import os; from pathlib import Path; "
+        "roots=[Path('/app/logs'),Path('/app/data/feedback')]; "
+        "[(os.chown(p,10001,10001,follow_symlinks=False)) for r in roots for p in [r,*r.rglob('*')]]",
+    )
+    for mount in services.get("alloy", {}).get("Mounts", []):
+        if mount["Destination"] == "/var/lib/alloy" and mount["Type"] == "volume":
+            compose(
+                runtime_path,
+                env,
+                "run",
+                "--rm",
+                "--no-deps",
+                "--pull",
+                "never",
+                "--user",
+                "0:0",
+                "--cap-add",
+                "CHOWN",
+                "--cap-add",
+                "DAC_OVERRIDE",
+                "-v",
+                mount["Name"] + ":/alloy-state",
+                "diabetes-api",
+                "python",
+                "-c",
+                "import os; from pathlib import Path; r=Path('/alloy-state'); "
+                "[os.chown(p,473,473,follow_symlinks=False) for p in [r,*r.rglob('*')]]",
+            )
+    # Долгоживущие Vault/БД/Kafka не пересоздаются при обновлении приложения.
+    # Без unseal-ключа нельзя автоматически пересоздать Vault.
+
+
 def deploy(folder, expected_commit, expected_run, *, preflight=False):
     manifest, config = read_release(folder, expected_commit, expected_run)
-    services = existing_services()
-    if not vault_ready():
-        raise RuntimeError(
-            "Vault заблокирован. Выполните make start для разблокировки, затем повторите CD"
-        )
-    check_infrastructure(config, services)
-    env = service_environment(services)
     home = deployment_home()
     with deployment_lock(home):
+        services = existing_services()
+        if not vault_ready(services):
+            raise RuntimeError(
+                "Vault заблокирован. Выполните make start для разблокировки, затем повторите CD"
+            )
+        check_infrastructure(config, services)
+        env = service_environment(services)
         package_id = hashlib.sha256(
             json.dumps(manifest, sort_keys=True).encode()
         ).hexdigest()[:12]
@@ -283,6 +442,7 @@ def deploy(folder, expected_commit, expected_run, *, preflight=False):
                 raise ValueError("В локальном каталоге уже другой пакет этого коммита")
         else:
             shutil.copytree(folder, destination)
+        stage_models(manifest, ROOT / "models", destination / "models")
         runtime = configure_runtime(config, destination, services)
         runtime_path = destination / "runtime.json"
         runtime_path.write_text(json.dumps(runtime, indent=2), encoding="utf-8")
@@ -293,7 +453,14 @@ def deploy(folder, expected_commit, expected_run, *, preflight=False):
             )
             return
         print("Получение проверенных образов приложения и мониторинга...")
-        compose(runtime_path, env, "pull", *APPLICATION, *MONITORING)
+        compose(
+            runtime_path,
+            env,
+            "pull",
+            *APPLICATION,
+            *MONITORING,
+            *(name for name in OPTIONAL_MONITORING if name in config["services"]),
+        )
         # Обязательно до миграций, регистрации моделей и замены контейнеров.
         # Ошибка копирования прерывает выкладку; восстановления здесь нет.
         print("Создание резервной копии БД перед обновлением...")
@@ -301,8 +468,7 @@ def deploy(folder, expected_commit, expected_run, *, preflight=False):
             home / "backups", container=services["db"]["Id"]
         )
         print(f"Резервная копия БД перед выпуском {manifest['commit']}: {backup}")
-        # Долгоживущие Vault/БД/Kafka не пересоздаются при обновлении приложения.
-        # Без unseal-ключа нельзя автоматически пересоздать Vault.
+        prepare_application_storage(runtime_path, env, services)
         for command in (
             ["scripts.update_database"],
             ["src.register_release", "models/current.json", "--apply"],
@@ -313,18 +479,11 @@ def deploy(folder, expected_commit, expected_run, *, preflight=False):
             ],
         ):
             print(f"Выполнение {command[0]}...")
-            compose(
-                runtime_path,
+            run_maintenance(
+                ["docker", "compose", "-p", PROJECT, "-f", str(runtime_path)],
                 env,
-                "run",
-                "--rm",
-                "--no-deps",
-                "--pull",
-                "never",
-                "diabetes-api",
-                "python",
-                "-m",
-                *command,
+                installed_admin_credentials(services),
+                command,
             )
         print("Обновление контейнеров приложения и мониторинга...")
         compose(
@@ -341,6 +500,7 @@ def deploy(folder, expected_commit, expected_run, *, preflight=False):
             "180",
             *APPLICATION,
             *MONITORING,
+            *(name for name in OPTIONAL_MONITORING if name in config["services"]),
         )
         print("Проверка готовности обновлённого приложения...")
         check_application()
@@ -362,9 +522,12 @@ def resume(database=None):
     from scripts.start_stack import KEEPASS_PATH_FILE, KeePassCredentials
 
     services = existing_services()
+    connection = installed_connection(services)
     subprocess.run(["docker", "start", services["vault"]["Id"]], check=True)
     print("Ожидание готовности Vault...")
-    status = wait_for_vault_response("http://127.0.0.1:8201/v1/sys/seal-status")
+    status = wait_for_vault_response(
+        connection.url + "sys/seal-status", opener=connection.opener
+    )
     if not status["initialized"]:
         raise RuntimeError(
             "Vault не инициализирован; проверьте подключение прежнего тома данных"
@@ -379,16 +542,22 @@ def resume(database=None):
         bootstrap = store.read()
         payload = json.dumps({"key": bootstrap["unseal_key"]}).encode()
         request = urllib.request.Request(
-            "http://127.0.0.1:8201/v1/sys/unseal",
+            connection.url + "sys/unseal",
             data=payload,
             headers={"Content-Type": "application/json"},
             method="PUT",
         )
-        if wait_for_vault_response(request)["sealed"]:
+        if wait_for_vault_response(request, opener=connection.opener)["sealed"]:
             raise RuntimeError("Vault не разблокирован")
         KEEPASS_PATH_FILE.parent.mkdir(parents=True, exist_ok=True)
         KEEPASS_PATH_FILE.write_text(store.database, encoding="utf-8")
-    for name in ["db", "kafka", *APPLICATION, *MONITORING]:
+    for name in [
+        "db",
+        "kafka",
+        *APPLICATION,
+        *MONITORING,
+        *(name for name in OPTIONAL_MONITORING if name in services),
+    ]:
         subprocess.run(["docker", "start", f"{PROJECT}-{name}-1"], check=True)
     check_application()
     print("Существующая версия запущена. Локальный код не собирался.")

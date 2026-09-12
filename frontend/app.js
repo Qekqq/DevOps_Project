@@ -15,7 +15,7 @@ import {
   snapshotDialog,
 } from './js/history.js';
 import { studyCard, predictionRows } from './js/study-card.js';
-import { monitoring } from './js/monitoring.js';
+import { monitoring, loadDashboards } from './js/monitoring.js';
 
 const app = document.querySelector('#app');
 const titles = {
@@ -171,6 +171,7 @@ function render() {
         ? historyView(state.filters)
         : monitoring();
   app.innerHTML = shell(content);
+  if (state.route === 'monitoring') loadDashboards();
   checkConnection();
   if (state.user.role !== 'admin')
     app.querySelectorAll('a[href="#history"]').forEach((link) => link.remove());

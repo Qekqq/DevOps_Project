@@ -17,7 +17,9 @@ SQLAlchemy==2.0.50
 psycopg2-binary==2.9.12
 
 hvac==2.4.0
+cryptography==50.0.1
 requests==2.34.2
 
-kafka-python==2.0.2
+kafka-python==2.3.2
 prometheus-client==0.26.0
+evidently==0.7.23

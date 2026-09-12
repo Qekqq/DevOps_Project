@@ -5,6 +5,8 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from threading import Lock
 
+from src.runtime_logging import DiagnosticFormatter
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 LOGS_DIR = PROJECT_ROOT / "logs"
 MAX_LOG_BYTES = 5_000_000
@@ -35,6 +37,8 @@ def get_logger(name: str) -> logging.Logger:
             fmt="%(asctime)s | %(name)s | %(levelname)s | %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         )
+        if os.getenv("APP_SERVICE"):
+            formatter = DiagnosticFormatter()
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setLevel(logging.INFO)
         console_handler.setFormatter(formatter)

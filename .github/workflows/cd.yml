@@ -61,7 +61,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: python -m pip install hvac==2.4.0 requests==2.34.2 pytest==9.0.3
+      - run: python -m pip install -r requirements.txt
+      - name: Закрытая загрузка моделей проверяемого коммита
+        env:
+          DVC_YANDEX_USER: ${{ secrets.DVC_YANDEX_USER }}
+          DVC_YANDEX_PASSWORD: ${{ secrets.DVC_YANDEX_PASSWORD }}
+        run: python -m scripts.fetch_models
       - uses: actions/download-artifact@v4
         with:
           name: release-${{ steps.release.outputs.sha }}
@@ -80,19 +85,30 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Получение проверенных образов
         run: docker compose -f release/docker-compose.json pull
+      - name: Сканирование всего выпуска перед запуском
+        run: python -m scripts.scan_images --compose release/docker-compose.json
+      - name: Отчёты безопасности выпуска
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-security-${{ steps.release.outputs.sha }}
+          path: .local-history/security-scans/**/report.json
+          retention-days: 14
       - name: Запуск и интеграционные проверки
-        run: python -m scripts.start_stack --ci --no-build --check --release-dir release
+        run: python -m scripts.start_stack --ci --vault-tls --file-secrets --project devops_verify --no-build --check --release-dir release
       - name: Диагностика сервисов
         if: failure()
         run: |
-          docker compose -f release/docker-compose.json ps -a
-          docker compose -f release/docker-compose.json logs --tail=100 diabetes-api kafka-consumer metrics-exporter frontend
+          docker compose -p devops_verify -f release/docker-compose.json ps -a
+          docker compose -p devops_verify -f release/docker-compose.json logs --tail=100 diabetes-api kafka-consumer metrics-exporter frontend docker-stats docker-proxy
       - name: Удаление только одноразового тестового окружения
         if: always()
         run: |
           if [ -f release/docker-compose.json ]; then
-            docker compose -f release/docker-compose.json down -v
+            docker compose -p devops_verify -f release/docker-compose.json down -v
           fi
+          # Includes TLS/AppRole volumes from a partially completed bootstrap.
+          docker volume ls -q --filter label=com.docker.compose.project=devops_verify | xargs -r docker volume rm
 
   deploy:
     name: Обновление постоянного приложения
@@ -136,6 +152,13 @@ jobs:
           & $deploymentPython -c "import sys; assert sys.version_info >= (3, 11), 'Python 3.11+ is required'; print(sys.version)"
           if ($LASTEXITCODE -ne 0) { throw 'Installed Python failed to start; deployment stopped.' }
           "DEPLOY_PYTHON=$deploymentPython" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Получение моделей из закрытого DVC-хранилища
+        env:
+          DVC_YANDEX_USER: ${{ secrets.DVC_YANDEX_USER }}
+          DVC_YANDEX_PASSWORD: ${{ secrets.DVC_YANDEX_PASSWORD }}
+        run: |
+          & $env:DEPLOY_PYTHON -m scripts.fetch_models
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/download-artifact@v4
         with:
           name: release-${{ needs.verify-release.outputs.sha }}
@@ -163,3 +186,12 @@ jobs:
           if (-not $env:DEVOPS_DEPLOY_HOME) { throw 'Runner is not configured: DEVOPS_DEPLOY_HOME is missing' }
           & $env:DEPLOY_PYTHON -m scripts.deploy_release --release release --commit $env:RELEASE_SHA --ci-run $env:CI_RUN_ID
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Сохранение состава установленного выпуска для повторного сканирования
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployed-release
+          path: |
+            release/docker-compose.json
+            release/release.json
+          retention-days: 90
+          if-no-files-found: error

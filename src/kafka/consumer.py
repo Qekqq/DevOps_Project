@@ -18,6 +18,7 @@ from src.db.repositories import (
 from src.kafka.retries import defer_predictions, start_retry_worker
 from src.kafka.shadow import ShadowPredictionError, predict_challengers
 from src.logger import get_logger
+from src.runtime_logging import configure_diagnostics
 from src.secrets.vault_client import get_kafka_secrets
 from src.telemetry import CONSUMER_CONNECTED, DELIVERY, event, request_id, start_metrics
 
@@ -25,7 +26,7 @@ logger = get_logger(__name__)
 
 
 def consumer_connected(consumer):
-    # В kafka-python 2.0.2 bootstrap_connected() проверяет только начальное
+    # bootstrap_connected() проверяет только начальное
     # соединение, которое закрывается после получения metadata. Проверяем
     # рабочие соединения клиента; публичного аналога у этой версии нет.
     return any(conn.connected() for conn in list(consumer._client._conns.values()))
@@ -59,9 +60,21 @@ def save_message_to_database(message: dict) -> None:
             response_time_ms=message.get("response_time_ms"),
             # В старых сообщениях поле отсутствует: producer публиковал champion.
             role_at_prediction=message.get("role_at_prediction", "champion"),
+            predicted_at=prediction_time(message),
         )
 
         db.commit()
+
+
+def prediction_time(message):
+    """Сохраняем время события, а не время доставки Kafka. Старые сообщения — fallback БД."""
+    value = message.get("created_at")
+    if value is None:
+        return None
+    result = datetime.fromisoformat(value)
+    if result.tzinfo is None:
+        raise ValueError("Время прогноза должно содержать часовой пояс")
+    return result.astimezone(timezone.utc)
 
 
 def create_consumer() -> KafkaConsumer:
@@ -131,7 +144,7 @@ def run() -> None:
             consumer.commit(
                 {
                     TopicPartition(record.topic, record.partition): OffsetAndMetadata(
-                        record.offset + 1, ""
+                        record.offset + 1, "", getattr(record, "leader_epoch", -1)
                     )
                 }
             )
@@ -155,6 +168,7 @@ def run() -> None:
 
 
 if __name__ == "__main__":
+    configure_diagnostics()
     start_metrics()
     retry_stop = start_retry_worker()
     try:

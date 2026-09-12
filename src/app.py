@@ -124,6 +124,7 @@ def build_prediction_message(
     result: dict,
     response_time_ms: int,
     model_version: str,
+    predicted_at: datetime | None = None,
 ) -> dict:
     """
     Формирует сообщение с результатом работы модели для отправки в Kafka.
@@ -138,7 +139,7 @@ def build_prediction_message(
         "probability": result.get("probability"),
         "label": result["label"],
         "response_time_ms": response_time_ms,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": (predicted_at or datetime.now(timezone.utc)).isoformat(),
         "request_id": request_id.get(),
     }
 
@@ -148,6 +149,7 @@ def publish_prediction(
     result: dict,
     response_time_ms: int,
     model_version: str,
+    predicted_at: datetime | None = None,
 ) -> None:
     """
     Публикует результат прогноза в Kafka (роль Producer).
@@ -156,11 +158,13 @@ def publish_prediction(
     """
     try:
         message = build_prediction_message(
-            input_data, result, response_time_ms, model_version
+            input_data, result, response_time_ms, model_version, predicted_at
         )
         send_prediction_message(message, key=input_data.patient_code)
     except Exception as error:  # noqa: BLE001
-        logger.error("Не удалось опубликовать прогноз в Kafka: %s", error)
+        logger.error(
+            "Не удалось опубликовать прогноз в Kafka: %s", type(error).__name__
+        )
         raise HTTPException(
             status_code=503,
             detail="Не удалось передать прогноз на сохранение. Повторите попытку позже.",
@@ -189,7 +193,9 @@ def database_health_check() -> dict[str, str]:
         return {"status": "ok", "database": "connected"}
 
     except (RuntimeError, SQLAlchemyError) as error:
-        logger.error("Проверка подключения к БД завершилась ошибкой: %s", error)
+        logger.error(
+            "Проверка подключения к БД завершилась ошибкой: %s", type(error).__name__
+        )
         raise HTTPException(
             status_code=503,
             detail="Не удалось подключиться к базе данных. Повторите попытку позже.",
@@ -204,6 +210,7 @@ def predict_diabetes(
     Выполняет прогноз риска диабета и публикует результат в Kafka.
     """
     start_time = time.perf_counter()
+    predicted_at = datetime.now(timezone.utc)
     model_input = build_features(input_data)
 
     try:
@@ -226,7 +233,7 @@ def predict_diabetes(
             detail="Основная модель не назначена. Обратитесь к администратору.",
         ) from error
     except (RuntimeError, SQLAlchemyError) as error:
-        logger.error("Не удалось проверить наличие прогноза: %s", error)
+        logger.error("Не удалось проверить наличие прогноза: %s", type(error).__name__)
         raise HTTPException(
             status_code=503,
             detail="Не удалось подключиться к базе данных. Повторите попытку позже.",
@@ -240,7 +247,7 @@ def predict_diabetes(
     try:
         predictor = model_registry.from_record(champion)
     except Exception as error:
-        logger.error("Не удалось загрузить champion: %s", error)
+        logger.error("Не удалось загрузить champion: %s", type(error).__name__)
         raise HTTPException(
             status_code=503,
             detail="Основная модель временно недоступна. Повторите попытку позже.",
@@ -277,6 +284,7 @@ def predict_diabetes(
             result=result,
             response_time_ms=response_time_ms,
             model_version=selected_version,
+            predicted_at=predicted_at,
         )
 
         PREDICTIONS.labels(cached="false").inc()
@@ -286,14 +294,18 @@ def predict_diabetes(
     except HTTPException:
         raise
     except ValueError as error:
-        logger.error("Ошибка валидации при выполнении прогноза: %s", error)
+        logger.error(
+            "Ошибка валидации при выполнении прогноза: %s", type(error).__name__
+        )
         raise HTTPException(
             status_code=400,
             detail="Не удалось обработать данные для прогноза. Проверьте введённые значения.",
         )
 
     except Exception as error:
-        logger.error("Непредвиденная ошибка при выполнении прогноза: %s", error)
+        logger.error(
+            "Непредвиденная ошибка при выполнении прогноза: %s", type(error).__name__
+        )
         raise HTTPException(
             status_code=500,
             detail="Не удалось выполнить прогноз из-за внутренней ошибки сервиса.",

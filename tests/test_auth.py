@@ -52,7 +52,7 @@ def setup():
             yield db
 
     application.dependency_overrides[get_db] = database
-    auth._attempts.clear()
+    auth._login_limits = auth.LoginLimits()
     with TestClient(
         application, headers={"X-Requested-With": "DiabetesPredict"}
     ) as client:
@@ -141,7 +141,8 @@ def test_login_rejects_client_role_and_throttles(setup):
         ).status_code
         == 422
     )
-    auth._attempts.extend([auth.time.monotonic()] * 10)
+    for _ in range(10):
+        auth._login_limits.admit(auth.fingerprint("test"))
     assert (
         client.post(
             "/auth/login", json={"username": "test", "password": PASSWORD}

@@ -4,10 +4,8 @@ import hashlib
 import hmac
 import os
 import secrets
-import time
-from collections import deque
 from datetime import datetime, timedelta, timezone
-from threading import Lock
+from threading import BoundedSemaphore
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.security import APIKeyCookie
@@ -18,14 +16,15 @@ from sqlalchemy.orm import Session
 from src.db.database import get_db
 from src.db.models import User, UserSession
 from src.passwords import hash_password, verify_password
+from src.request_limits import LoginLimits
 
 router = APIRouter(prefix="/auth", tags=["Авторизация"])
 COOKIE_NAME = "dp_session"
 SESSION_SECONDS = 8 * 3600
 cookie = APIKeyCookie(name=COOKIE_NAME, auto_error=False)
 _dummy_hash = hash_password(secrets.token_urlsafe(32))
-_attempts = deque()
-_lock = Lock()
+_login_limits = LoginLimits()
+_password_slots = BoundedSemaphore(2)
 
 
 def fingerprint(value: str) -> str:
@@ -123,20 +122,26 @@ def login(
     response: Response,
     db: Session = Depends(get_db),
 ):
-    # Один процесс API учебного стенда: общий предел ограничивает и расход памяти scrypt.
-    now = time.monotonic()
-    with _lock:
-        while _attempts and _attempts[0] < now - 60:
-            _attempts.popleft()
-        if len(_attempts) >= 10:
-            raise HTTPException(
-                429,
-                "Слишком много попыток. Повторите через минуту.",
-                headers={"Retry-After": "60"},
-            )
-        _attempts.append(now)
-    user = db.scalar(select(User).where(User.username == data.username))
-    valid = verify_password(data.password, user.password_hash if user else _dummy_hash)
+    # No raw username is retained in the limiter. Nginx also limits by client IP.
+    if not _login_limits.admit(fingerprint(data.username)):
+        raise HTTPException(
+            429,
+            "Слишком много попыток. Повторите через минуту.",
+            headers={"Retry-After": "60"},
+        )
+    if not _password_slots.acquire(blocking=False):
+        raise HTTPException(
+            429,
+            "Вход занят. Повторите через несколько секунд.",
+            headers={"Retry-After": "2"},
+        )
+    try:
+        user = db.scalar(select(User).where(User.username == data.username))
+        valid = verify_password(
+            data.password, user.password_hash if user else _dummy_hash
+        )
+    finally:
+        _password_slots.release()
     if (
         not valid
         or user is None

@@ -107,7 +107,27 @@ def wait_for_vault_health(compose, env):
     )
 
 
-def configure_vault(client, initial):
+def validate_service_database(secret, database, username):
+    expected = dict(database, POSTGRES_USER=username)
+    if (
+        any(
+            secret.get(key) != expected[key]
+            for key in (
+                "POSTGRES_HOST",
+                "POSTGRES_PORT",
+                "POSTGRES_DB",
+                "POSTGRES_USER",
+            )
+        )
+        or not isinstance(secret.get("POSTGRES_PASSWORD"), str)
+        or len(secret["POSTGRES_PASSWORD"]) < 32
+    ):
+        raise RuntimeError(
+            "Stored service database credentials do not match the restricted role"
+        )
+
+
+def configure_vault(client, initial, *, restricted_database=False):
     if "secret/" not in client.sys.list_mounted_secrets_engines()["data"]:
         client.sys.enable_secrets_engine("kv", path="secret", options={"version": "2"})
     try:
@@ -131,6 +151,45 @@ def configure_vault(client, initial):
         raise RuntimeError(
             "Реквизиты старой БД отличаются от Vault; автоматическая замена запрещена."
         )
+    try:
+        client.secrets.kv.v2.read_secret_version(
+            path="database/metrics",
+            raise_on_deleted_version=True,
+        )
+    except hvac.exceptions.InvalidPath:
+        client.secrets.kv.v2.create_or_update_secret(
+            path="database/metrics",
+            secret=dict(
+                database,
+                POSTGRES_USER="diabetes_metrics",
+                POSTGRES_PASSWORD=secrets.token_hex(32),
+            ),
+        )
+    if restricted_database:
+        for service in ("api", "consumer"):
+            path = f"database/{service}"
+            try:
+                client.secrets.kv.v2.read_secret_version(
+                    path=path, raise_on_deleted_version=True
+                )
+            except hvac.exceptions.InvalidPath:
+                client.secrets.kv.v2.create_or_update_secret(
+                    path=path,
+                    secret=dict(
+                        database,
+                        POSTGRES_USER=f"diabetes_{service}",
+                        POSTGRES_PASSWORD=secrets.token_hex(32),
+                    ),
+                )
+    paths = {"metrics": "diabetes_metrics"}
+    if restricted_database:
+        paths.update(api="diabetes_api", consumer="diabetes_consumer")
+    for name, username in paths.items():
+        stored = client.secrets.kv.v2.read_secret_version(
+            path=f"database/{name}",
+            raise_on_deleted_version=True,
+        )["data"]["data"]
+        validate_service_database(stored, database, username)
     client.secrets.kv.v2.create_or_update_secret(
         path="kafka/config",
         secret={
@@ -143,11 +202,19 @@ def configure_vault(client, initial):
         client.sys.enable_auth_method("approle")
     mount_accessor = client.sys.list_auth_methods()["data"]["approle/"]["accessor"]
     identities = {}
-    policy = "\n".join(
-        f'path "secret/data/{path}" {{ capabilities = ["read"] }}'
-        for path in ("database/postgres", "kafka/config")
-    )
-    for role, prefix in (("diabetes-api", "API"), ("kafka-consumer", "CONSUMER")):
+    for role, prefix in (
+        ("diabetes-api", "API"),
+        ("kafka-consumer", "CONSUMER"),
+        ("metrics-exporter", "EXPORTER"),
+    ):
+        paths = ["database/metrics" if prefix == "EXPORTER" else "database/postgres"]
+        if restricted_database and prefix in ("API", "CONSUMER"):
+            paths = [f"database/{prefix.lower()}"]
+        if prefix != "EXPORTER":
+            paths.append("kafka/config")
+        policy = "\n".join(
+            f'path "secret/data/{path}" {{ capabilities = ["read"] }}' for path in paths
+        )
         client.sys.create_or_update_policy(role, policy)
         client.auth.approle.create_or_update_approle(
             role_name=role,
@@ -179,6 +246,27 @@ def configure_vault(client, initial):
     return database, identities
 
 
+def require_empty_project(project):
+    existing = subprocess.check_output(
+        [
+            "docker",
+            "ps",
+            "-aq",
+            "--filter",
+            f"label=com.docker.compose.project={project}",
+        ],
+        text=True,
+    ).strip()
+    volumes = subprocess.check_output(
+        ["docker", "volume", "ls", "-q"],
+        text=True,
+    ).splitlines()
+    if existing or f"{project}_vault_data" in volumes:
+        raise RuntimeError(
+            "--ci требует пустого отдельного проекта; существующие контейнеры и том Vault не изменены"
+        )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -206,7 +294,17 @@ def main():
         help="Явно разрешить сборку локального кода вместо выкладки",
     )
     parser.add_argument("--vault-url", default="http://127.0.0.1:8201")
-    parser.add_argument("--api-url", default="http://127.0.0.1:8001")
+    parser.add_argument(
+        "--vault-tls",
+        action="store_true",
+        help="TLS для нового отдельного стенда Vault",
+    )
+    parser.add_argument("--api-url", default="http://127.0.0.1:8080/api")
+    parser.add_argument(
+        "--file-secrets",
+        action="store_true",
+        help="AppRole в отдельных Docker-томах нового стенда",
+    )
     parser.add_argument(
         "--no-build",
         action="store_true",
@@ -216,6 +314,14 @@ def main():
         "--check", action="store_true", help="Интеграционные проверки на чистом стенде"
     )
     args = parser.parse_args()
+    if args.file_secrets and not args.ci:
+        parser.error(
+            "--file-secrets требует нового стенда --ci; постоянная установка требует отдельной ротации"
+        )
+    if args.vault_tls and not args.ci:
+        parser.error(
+            "--vault-tls пока разрешён только с --ci на новом стенде; существующий Vault требует отдельной миграции"
+        )
     if not args.ci and not args.local_build:
         parser.error(
             "Для запуска существующей версии используйте make start. Локальная сборка требует --local-build"
@@ -226,8 +332,10 @@ def main():
         )
     if args.release_dir:
         from scripts.deploy_release import read_release
+        from scripts.model_delivery import stage_models
 
-        read_release(args.release_dir)
+        manifest, _ = read_release(args.release_dir)
+        stage_models(manifest, ROOT / "models", args.release_dir / "models")
         args.no_build = True
     if args.check and not args.ci:
         parser.error("--check разрешён только с --ci на одноразовом стенде")
@@ -241,7 +349,11 @@ def main():
         if not args.keepass_db or not Path(args.keepass_db).is_file():
             parser.error("Файл KeePassXC не найден. Проверьте путь к .kdbx")
     initial = {}
-    env = dict(os.environ, COMPOSE_DISABLE_ENV_FILE="1")
+    env = dict(
+        os.environ, COMPOSE_DISABLE_ENV_FILE="1", COMPOSE_PROJECT_NAME=args.project
+    )
+    if os.name != "nt" and Path("/var/run/docker.sock").exists():
+        env["DOCKER_SOCKET_GID"] = str(Path("/var/run/docker.sock").stat().st_gid)
     for key in ("VAULT_TOKEN", "VAULT_UNSEAL_KEY"):
         env.pop(key, None)
     compose_file = (
@@ -252,6 +364,8 @@ def main():
     compose = ["docker", "compose", "-p", args.project, "-f", compose_file]
     for path in args.compose_file:
         compose += ["-f", path]
+    if args.ci:
+        require_empty_project(args.project)
 
     def run(*command):
         subprocess.run(compose + list(command), cwd=ROOT, env=env, check=True)
@@ -267,11 +381,40 @@ def main():
         KEEPASS_PATH_FILE.parent.mkdir(parents=True, exist_ok=True)
         KEEPASS_PATH_FILE.write_text(store.database, encoding="utf-8")
     if not args.no_build:
-        run("build", "diabetes-api", "kafka-consumer", "metrics-exporter")
-    if not args.release_dir:
-        run("build", "frontend")
+        run(
+            "build",
+            "diabetes-api",
+            "kafka-consumer",
+            "metrics-exporter",
+            "docker-stats",
+        )
+    if not args.no_build:
+        run("build", "frontend", "grafana", "prometheus", "loki", "alloy")
+    if args.vault_tls:
+        from scripts.vault_tls import prepare_tls
+
+        rendered = json.loads(
+            subprocess.check_output(
+                compose + ["config", "--format", "json"],
+                env=env,
+                cwd=ROOT,
+                text=True,
+            )
+        )
+        ca_file = prepare_tls(
+            args.project,
+            rendered["services"]["diabetes-api"].get(
+                "image", f"{args.project}-diabetes-api"
+            ),
+            ROOT / ".local-history" / "vault-tls" / args.project,
+        )
+        env["VAULT_CA_FILE"] = str(ca_file)
+        compose += ["-f", str((args.release_dir or ROOT) / "vault/tls.compose.yml")]
+        args.vault_url = args.vault_url.replace("http://", "https://", 1)
     run("up", "-d", "vault")
-    client = hvac.Client(url=args.vault_url, timeout=10)
+    client = hvac.Client(
+        url=args.vault_url, timeout=10, verify=env.get("VAULT_CA_FILE") or True
+    )
     wait_until(lambda: client.sys.read_seal_status() is not None, "Vault не отвечает")
     if not client.sys.is_initialized():
         if store:
@@ -305,9 +448,12 @@ def main():
         raise RuntimeError("Не удалось авторизовать настройку Vault.")
     # Останавливаем обращения со старыми ключами до их отзыва в Vault.
     run("stop", "diabetes-api", "kafka-consumer", "metrics-exporter")
-    database, identities = configure_vault(client, initial)
+    database, identities = configure_vault(client, initial, restricted_database=args.ci)
     env.update({key: database[key] for key in DATABASE_KEYS})
     env.update(identities)
+    if args.ci:
+        env["API_VAULT_DB_SECRET_PATH"] = "database/api"
+        env["CONSUMER_VAULT_DB_SECRET_PATH"] = "database/consumer"
     if os.getenv("GITHUB_ACTIONS") == "true":
         for value in [
             *bootstrap.values(),
@@ -315,34 +461,56 @@ def main():
             *identities.values(),
         ]:
             print(f"::add-mask::{value}", flush=True)
-    run("up", "-d", "db", "kafka")
-    run(
-        "run",
-        "--rm",
-        "diabetes-api",
-        "python",
-        "-m",
-        "scripts.update_database",
+    if args.file_secrets:
+        from scripts.vault_identity import write_identities
+
+        rendered = json.loads(
+            subprocess.check_output(
+                compose + ["config", "--format", "json"], cwd=ROOT, env=env, text=True
+            )
+        )
+        helper_image = rendered["services"]["diabetes-api"].get(
+            "image", f"{args.project}-diabetes-api"
+        )
+        overlay = write_identities(args.project, helper_image, identities)
+        identity_config = (
+            ROOT / ".local-history" / "vault-identities" / args.project / "compose.json"
+        )
+        identity_config.parent.mkdir(parents=True, exist_ok=True)
+        identity_config.write_text(json.dumps(overlay, indent=2), encoding="utf-8")
+        compose += ["-f", str(identity_config)]
+        for key in identities:
+            env.pop(key, None)
+    run("up", "-d", "--wait", "--wait-timeout", "180", "db", "kafka")
+
+    def maintenance(command, extra=None):
+        from scripts.maintenance_client import run_maintenance
+
+        run_maintenance(compose, env, database, command, extra=extra)
+
+    maintenance(["scripts.update_database"])
+    metrics_credentials = client.secrets.kv.v2.read_secret_version(
+        path="database/metrics",
+        raise_on_deleted_version=True,
+    )["data"]["data"]
+    runtime_credentials = {}
+    for service in ("api", "consumer"):
+        if args.ci:
+            credentials = client.secrets.kv.v2.read_secret_version(
+                path=f"database/{service}", raise_on_deleted_version=True
+            )["data"]["data"]
+            runtime_credentials[f"diabetes_{service}"] = credentials[
+                "POSTGRES_PASSWORD"
+            ]
+        else:
+            runtime_credentials[f"diabetes_{service}"] = secrets.token_hex(32)
+    maintenance(
+        ["provision-runtime"],
+        {"identities": runtime_credentials, "metrics": metrics_credentials},
     )
-    run(
-        "run",
-        "--rm",
-        "diabetes-api",
-        "python",
-        "-m",
-        "src.register_release",
-        "models/current.json",
-        "--apply",
-    )
-    run(
-        "run",
-        "--rm",
-        "diabetes-api",
-        "python",
-        "-m",
-        "scripts.activate_model_release",
-        "models/current.json",
-        "--if-no-champion",
+    maintenance(["src.register_release", "models/current.json", "--apply"])
+    maintenance(
+        ["scripts.activate_model_release", "models/current.json", "--if-no-champion"]
     )
     run(
         "up",
@@ -357,38 +525,65 @@ def main():
         "prometheus",
         "grafana",
         "alloy",
+        "docker-stats",
         "frontend",
     )
     wait_until(
         lambda: requests.get(args.api_url + "/db/health", timeout=5).ok, "API не готов"
     )
     if args.check:
-        run(
-            "run",
-            "--rm",
-            "--no-deps",
-            "-v",
-            f"{ROOT / 'tests'}:/app/tests:ro",
-            "-e",
-            "RUN_INTEGRATION_TESTS=1",
-            "diabetes-api",
-            "python",
-            "-m",
-            "pytest",
-            "tests/integration/test_database_contract.py",
-            "tests/integration/test_prediction_flow.py",
-            "tests/integration/test_monitoring_stack.py",
-            "-v",
-            "-p",
-            "no:cacheprovider",
+        test_packages = ROOT / ".local-history/integration-packages"
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--upgrade",
+                "--target",
+                str(test_packages),
+                "-r",
+                str(ROOT / "tests/requirements.txt"),
+            ],
+            check=True,
+        )
+        subprocess.run(
+            compose
+            + [
+                "run",
+                "--rm",
+                "--no-deps",
+                "-T",
+                "-v",
+                f"{ROOT / 'tests'}:/app/tests:ro",
+                "-v",
+                f"{test_packages}:/test-packages:ro",
+                "-e",
+                "RUN_INTEGRATION_TESTS=1",
+                "diabetes-api",
+                "python",
+                "-m",
+                "scripts.database_maintenance",
+                "integration-check",
+            ],
+            input=json.dumps({"database": database}),
+            env=env,
+            cwd=ROOT,
+            text=True,
+            encoding="utf-8",
+            check=True,
         )
         test_env = dict(
             env,
             RUN_INTEGRATION_TESTS="1",
             TEST_VAULT_URL=args.vault_url,
+            TEST_VAULT_CACERT=env.get("VAULT_CA_FILE", ""),
             TEST_API_URL=args.api_url,
             TEST_VAULT_TOKEN=bootstrap["root_token"],
             TEST_VAULT_UNSEAL_KEY=bootstrap["unseal_key"],
+            TEST_VAULT_FILE_SECRETS="1" if args.file_secrets else "0",
+            TEST_RESTRICTED_DATABASE="1",
+            **(identities if args.file_secrets else {}),
             TEST_COMPOSE_COMMAND=json.dumps(compose),
         )
         subprocess.run(
@@ -396,7 +591,9 @@ def main():
                 sys.executable,
                 "-m",
                 "pytest",
+                "tests/integration/test_database_roles.py",
                 "tests/integration/test_vault_lifecycle.py",
+                "tests/integration/test_monitoring_boundary.py",
                 "-v",
             ],
             cwd=ROOT,

@@ -1,12 +1,12 @@
 -- История изменений фиксируется в той же транзакции, что и изменение.
-CREATE FUNCTION audit_feedback() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE FUNCTION audit_feedback() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
     IF TG_OP = 'INSERT' THEN
-        INSERT INTO feedback_history(study_id, old_label, new_label, changed_by)
+        INSERT INTO public.feedback_history(study_id, old_label, new_label, changed_by)
         VALUES (NEW.study_id, NULL, NEW.true_label, NEW.created_by_user_id);
     ELSIF OLD.true_label IS DISTINCT FROM NEW.true_label THEN
         NEW.updated_at = now();
-        INSERT INTO feedback_history(study_id, old_label, new_label, changed_by)
+        INSERT INTO public.feedback_history(study_id, old_label, new_label, changed_by)
         VALUES (NEW.study_id, OLD.true_label, NEW.true_label, NEW.created_by_user_id);
     END IF;
     RETURN NEW;
@@ -14,15 +14,15 @@ END $$;
 CREATE TRIGGER feedback_audit BEFORE INSERT OR UPDATE ON feedback
 FOR EACH ROW EXECUTE FUNCTION audit_feedback();
 
-CREATE FUNCTION audit_model_role() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE FUNCTION audit_model_role() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
 DECLARE actor bigint;
 BEGIN
     actor := NULLIF(current_setting('app.actor_id', true), '')::bigint;
     IF TG_OP = 'INSERT' THEN
-        INSERT INTO model_role_history(model_version_id, old_role, new_role, changed_by)
+        INSERT INTO public.model_role_history(model_version_id, old_role, new_role, changed_by)
         VALUES (NEW.id, NULL, NEW.role, actor);
     ELSIF OLD.role IS DISTINCT FROM NEW.role THEN
-        INSERT INTO model_role_history(model_version_id, old_role, new_role, changed_by)
+        INSERT INTO public.model_role_history(model_version_id, old_role, new_role, changed_by)
         VALUES (NEW.id, OLD.role, NEW.role, actor);
     END IF;
     RETURN NEW;

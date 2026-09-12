@@ -43,8 +43,8 @@ jobs:
 
       - name: Проверка кода и схемы БД
         run: |
-          python -m ruff check src scripts tests notebooks
-          python -m ruff format --check src scripts tests notebooks
+          python -m ruff check src scripts tests notebooks infrastructure
+          python -m ruff format --check src scripts tests notebooks infrastructure
           python -m scripts.generate_schema --check
 
       - name: Загрузка выпуска моделей
@@ -70,12 +70,24 @@ jobs:
     name: Сборка и публикация Docker-образа
     runs-on: ubuntu-latest
     needs: test
+    # The first Grafana backend build downloads and compiles the Go workspace.
+    timeout-minutes: 180
+    concurrency:
+      group: infrastructure-images-${{ github.repository }}
+      cancel-in-progress: false
     permissions:
       contents: read
 
     steps:
       - name: Получение кода проекта
         uses: actions/checkout@v4
+
+      - name: Место для первой сборки мониторинга
+        # Only this disposable GitHub-hosted Linux job; these SDKs are unused.
+        run: |
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          df -h /
 
       - name: Настройка Python
         uses: actions/setup-python@v5
@@ -92,18 +104,19 @@ jobs:
           password: ${{ secrets.DVC_YANDEX_PASSWORD }}
 
       - name: Вход в Docker Hub
-        if: ${{ github.event_name != 'pull_request' }}
+        # This job only runs for this repository's trusted branches/PRs.
+        # Read access is also required to reuse private infrastructure images.
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Сборка и публикация Docker-образа
+      - name: Сборка Docker-образа для проверки
         id: api-image
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: ${{ github.event_name != 'pull_request' }}
+          load: true
           tags: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
           labels: org.opencontainers.image.revision=${{ github.sha }}
 
@@ -112,14 +125,65 @@ jobs:
           docker build --label "org.opencontainers.image.revision=$IMAGE_TAG" -t "$IMAGE_NAME-frontend:$IMAGE_TAG" ./frontend
           docker run --rm "$IMAGE_NAME-frontend:$IMAGE_TAG" nginx -t
 
+      - name: Проверка уязвимостей до публикации
+        run: |
+          python -m scripts.scan_images "$IMAGE_NAME:$IMAGE_TAG" "$IMAGE_NAME-frontend:$IMAGE_TAG" --output .local-history/security-scans/application
+
+      - name: Получение проверяемого мониторинга или его первая сборка
+        run: python -m scripts.infrastructure_cache prepare --group monitoring --repository "$IMAGE_NAME" --prune-build-cache
+
+      - name: Проверка образов мониторинга до публикации
+        run: python -m scripts.infrastructure_cache scan --group monitoring
+
+      - name: Получение проверяемой инфраструктуры или её первая сборка
+        run: python -m scripts.infrastructure_cache prepare --repository "$IMAGE_NAME"
+
+      - name: Проверка инфраструктуры до публикации
+        run: python -m scripts.infrastructure_cache scan
+
+      - name: Проверка прокси Docker
+        run: |
+          docker compose pull docker-proxy
+          python - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
+          from scripts.scan_images import scan
+          config = json.loads(subprocess.check_output(["docker", "compose", "config", "--format", "json"]))
+          successful = True
+          for name in ("docker-proxy",):
+              image = config["services"][name]["image"]
+              reference = json.loads(subprocess.check_output(["docker", "image", "inspect", image]))[0]["RepoDigests"][0]
+              successful = scan(reference, Path(".local-history/security-scans/monitoring") / name) and successful
+          if not successful:
+              raise SystemExit("Monitoring image scan blocked publication")
+          PY
+
+      - name: Отчёты сканирования
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-${{ github.sha }}
+          path: .local-history/security-scans/**/report.json
+          retention-days: 14
+
       - name: Публикация frontend и подготовка пакета выкладки
         if: ${{ github.event_name != 'pull_request' }}
-        env:
-          API_DIGEST: ${{ steps.api-image.outputs.digest }}
         run: |
+          docker push "$IMAGE_NAME:$IMAGE_TAG"
           docker push "$IMAGE_NAME-frontend:$IMAGE_TAG"
+          python -m scripts.infrastructure_cache publish
+          python -m scripts.infrastructure_cache publish --group monitoring
+          API_IMAGE=$(docker image inspect "$IMAGE_NAME:$IMAGE_TAG" --format '{{index .RepoDigests 0}}')
           FRONTEND_IMAGE=$(docker image inspect "$IMAGE_NAME-frontend:$IMAGE_TAG" --format '{{index .RepoDigests 0}}')
-          python -m scripts.package_release --output release --commit "$IMAGE_TAG" --run-id "$GITHUB_RUN_ID" --api-image "$IMAGE_NAME@$API_DIGEST" --frontend-image "$FRONTEND_IMAGE"
+          GRAFANA_IMAGE=$(python -c 'import json; print(json.load(open(".local-history/monitoring-images.json"))["images"]["grafana"]["reference"])')
+          PROMETHEUS_IMAGE=$(python -c 'import json; print(json.load(open(".local-history/monitoring-images.json"))["images"]["prometheus"]["reference"])')
+          LOKI_IMAGE=$(python -c 'import json; print(json.load(open(".local-history/monitoring-images.json"))["images"]["loki"]["reference"])')
+          ALLOY_IMAGE=$(python -c 'import json; print(json.load(open(".local-history/monitoring-images.json"))["images"]["alloy"]["reference"])')
+          POSTGRES_IMAGE=$(python -c 'import json; print(json.load(open(".local-history/infrastructure-images.json"))["images"]["postgres"]["reference"])')
+          KAFKA_IMAGE=$(python -c 'import json; print(json.load(open(".local-history/infrastructure-images.json"))["images"]["kafka"]["reference"])')
+          VAULT_IMAGE=$(python -c 'import json; print(json.load(open(".local-history/infrastructure-images.json"))["images"]["vault"]["reference"])')
+          python -m scripts.package_release --output release --commit "$IMAGE_TAG" --run-id "$GITHUB_RUN_ID" --api-image "$API_IMAGE" --frontend-image "$FRONTEND_IMAGE" --grafana-image "$GRAFANA_IMAGE" --prometheus-image "$PROMETHEUS_IMAGE" --loki-image "$LOKI_IMAGE" --alloy-image "$ALLOY_IMAGE" --postgres-image "$POSTGRES_IMAGE" --kafka-image "$KAFKA_IMAGE" --vault-image "$VAULT_IMAGE"
 
       - name: Сохранение точных образов и настроек выпуска
         if: ${{ github.event_name != 'pull_request' }}
@@ -127,5 +191,5 @@ jobs:
         with:
           name: release-${{ github.sha }}
           path: release/
-          retention-days: 30
+          retention-days: 90
           if-no-files-found: error

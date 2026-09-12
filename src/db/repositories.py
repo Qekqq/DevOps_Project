@@ -154,6 +154,7 @@ def save_prediction_history(
     user_id: int | None = None,
     response_time_ms: int | None = None,
     role_at_prediction: str | None = None,
+    predicted_at=None,
 ) -> PredictionHistory:
     """
     Сохраняет одно предсказание в prediction_history.
@@ -216,6 +217,7 @@ def save_prediction_history(
         probability=probability,
         role_at_prediction=role_at_prediction or model_version.role,
         response_time_ms=response_time_ms,
+        **({"created_at": predicted_at} if predicted_at is not None else {}),
     )
 
     db.add(prediction_history)
