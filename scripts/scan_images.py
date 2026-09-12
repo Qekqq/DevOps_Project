@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 from scripts.vulnerability_review import assess, blocks
@@ -31,6 +32,16 @@ def scan(image, directory):
     cache = CACHE
     cache.mkdir(parents=True, exist_ok=True)
     (cache / "tmp").mkdir(exist_ok=True)
+    status_path = directory / "scan-status.json"
+    status = {
+        "image": image,
+        "scanner": SCANNER,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "state": "started",
+    }
+    status_path.write_text(json.dumps(status), encoding="utf-8")
+    # A failed retry must never reuse the previous successful report.
+    report.unlink(missing_ok=True)
     try:
         # Export the resolved local platform image, not a multi-platform index
         # whose other blobs may not be present in Docker Desktop's image store.
@@ -114,8 +125,19 @@ def scan(image, directory):
             print(
                 f"  {item['VulnerabilityID']} {item['PkgName']} {item['InstalledVersion']} -> {item['FixedVersion']}"
             )
+        status.update(
+            state="complete",
+            completed_at=datetime.now(timezone.utc).isoformat(),
+            image_id=image_id,
+            blocking=len(blocking),
+        )
         return not blocking
+    except Exception as error:
+        # Keep credentials / command lines out of the portable report.
+        status.update(state="failed", error=type(error).__name__)
+        raise
     finally:
+        status_path.write_text(json.dumps(status, indent=2), encoding="utf-8")
         # Only the exact tar created by this invocation; reports are retained.
         archive.unlink(missing_ok=True)
 
@@ -149,9 +171,6 @@ def main():
         parser.error("Provide images or --compose")
     successful = True
     for index, image in enumerate(dict.fromkeys(images)):
-        subprocess.run(
-            ["docker", "image", "inspect", image], stdout=subprocess.DEVNULL, check=True
-        )
         successful = scan(image, args.output / str(index)) and successful
     if not successful:
         raise SystemExit("Vulnerable images: release blocked; see scan reports")

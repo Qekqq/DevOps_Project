@@ -37,10 +37,11 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - run: docker compose -f release/docker-compose.json pull
-      - run: python -m scripts.scan_images --compose release/docker-compose.json
-      - uses: actions/upload-artifact@v4
+      - id: image-scan
+        run: python -m scripts.scan_images --compose release/docker-compose.json
+      - uses: ./.github/actions/security-report
         if: always()
         with:
           name: scheduled-security-report
-          path: .local-history/security-scans/**/report.json
+          scan-outcome: ${{ steps.image-scan.outcome }}
           retention-days: 30

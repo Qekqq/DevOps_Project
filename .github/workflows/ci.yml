@@ -39,6 +39,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install -r requirements-security.txt
           pip install ruff==0.16.6
 
       - name: Проверка кода и схемы БД
@@ -118,6 +119,7 @@ jobs:
           docker run --rm "$IMAGE_NAME-frontend:$IMAGE_TAG" nginx -t
 
       - name: Проверка уязвимостей до публикации
+        id: application-scan
         run: |
           python -m scripts.scan_images "$IMAGE_NAME:$IMAGE_TAG" "$IMAGE_NAME-frontend:$IMAGE_TAG" --output .local-history/security-scans/application
 
@@ -129,10 +131,10 @@ jobs:
 
       - name: Отчёты сканирования
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: ./.github/actions/security-report
         with:
           name: security-${{ github.sha }}
-          path: .local-history/security-scans/**/report.json
+          scan-outcome: ${{ steps.application-scan.outcome }}
           retention-days: 14
 
       - name: Публикация frontend и подготовка пакета выкладки

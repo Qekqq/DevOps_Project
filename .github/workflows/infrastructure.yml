@@ -46,8 +46,10 @@ jobs:
       - name: Получение существующих образов или сборка изменившихся
         run: python -m scripts.infrastructure_cache prepare --group "$IMAGE_GROUP" --repository "$IMAGE_NAME" --prune-build-cache
       - name: Проверка уязвимостей
+        id: infrastructure-scan
         run: python -m scripts.infrastructure_cache scan --group "$IMAGE_GROUP"
       - name: Проверка прокси Docker
+        id: proxy-scan
         run: |
           docker compose pull docker-proxy
           python - <<'PY'
@@ -69,10 +71,16 @@ jobs:
         run: python -m scripts.infrastructure_cache publish --group "$IMAGE_GROUP"
       - name: Отчёты проверки
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: ./.github/actions/security-report
         with:
           name: infrastructure-security-${{ inputs.group }}-${{ github.sha }}
-          path: |
-            .local-history/security-scans/**/report.json
-            .local-history/*-images.json
+          scan-outcome: ${{ steps.infrastructure-scan.outcome == 'success' && steps.proxy-scan.outcome == 'success' && 'success' || 'failure' }}
+          retention-days: 90
+      - name: Состав служебных образов
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: infrastructure-images-${{ inputs.group }}-${{ github.sha }}
+          path: .local-history/*-images.json
+          include-hidden-files: true
           retention-days: 90

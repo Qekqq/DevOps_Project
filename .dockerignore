@@ -13,6 +13,7 @@ env/
 .dvc/
 .local-history/
 release/
+output/
 backups/
 .codex/
 .agents/

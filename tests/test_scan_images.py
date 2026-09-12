@@ -67,6 +67,8 @@ def test_scan_preserves_permissions_and_security_gate(tmp_path, monkeypatch, pla
     assert (
         json.loads((output / "report.json").read_text())["ResolvedImageId"] == image_id
     )
+    status = json.loads((output / "scan-status.json").read_text())
+    assert status["state"] == "complete" and status["blocking"] == 1
 
 
 def test_scanner_failure_does_not_pass_gate_or_leave_image_archive(
@@ -85,3 +87,19 @@ def test_scanner_failure_does_not_pass_gate_or_leave_image_archive(
     with pytest.raises(subprocess.CalledProcessError):
         scanner.scan("example/app:release", tmp_path)
     assert not (tmp_path / "image.tar").exists()
+    status = json.loads((tmp_path / "scan-status.json").read_text())
+    assert status["state"] == "failed" and status["error"] == "CalledProcessError"
+
+
+def test_failed_retry_removes_stale_successful_report(tmp_path, monkeypatch):
+    (tmp_path / "report.json").write_text('{"Results": []}')
+    monkeypatch.setattr(scanner, "CACHE", tmp_path / "cache")
+
+    def missing_image(*args, **kwargs):
+        raise subprocess.CalledProcessError(1, ["docker", "inspect"])
+
+    monkeypatch.setattr(scanner.subprocess, "check_output", missing_image)
+    with pytest.raises(subprocess.CalledProcessError):
+        scanner.scan("missing:tag", tmp_path)
+    assert not (tmp_path / "report.json").exists()
+    assert json.loads((tmp_path / "scan-status.json").read_text())["state"] == "failed"

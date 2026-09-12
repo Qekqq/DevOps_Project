@@ -11,7 +11,11 @@ RUN rm /runtime/src/train.py /runtime/src/data_preprocessing.py && \
 FROM python:3.11.16-slim-bookworm@sha256:528257d48c1da0dcecc2e725d1ae34498d60c965f1241e39cd6a85a8859bdf84
 
 WORKDIR /app
-RUN /usr/local/bin/python -m pip uninstall -y pip setuptools wheel
+# Debian security backport for PCRE2; keep the update explicit and versioned.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends --only-upgrade libpcre2-8-0=10.42-1+deb12u1 && \
+    rm -rf /var/lib/apt/lists/* && \
+    /usr/local/bin/python -m pip uninstall -y pip setuptools wheel
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1

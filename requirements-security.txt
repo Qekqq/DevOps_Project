@@ -1,0 +1,2 @@
+# CI reporting only; these packages are not installed in application images.
+reportlab==5.0.1
