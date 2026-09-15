@@ -67,12 +67,10 @@ export function monitoring() {
     </section>
     <section id="operations-monitoring" aria-label="Работа приложения" hidden>
       <div class="monitoring-toolbar">
-        <select id="monitoring-dashboard-select" aria-label="Выбрать дашборд"></select>
         <a id="monitoring-open" class="button monitoring-grafana-link" href="/grafana/" target="_blank" rel="noopener"
           title="Открыть в Grafana" aria-label="Открыть в Grafana">
           <img src="/assets/grafana.svg" alt="" width="26" height="26">
         </a></div>
-      <p id="monitoring-status" role="status"></p>
       <iframe id="operations-dashboard" class="monitoring-dashboard monitoring-operations" title="Работа приложения" hidden></iframe>
     </section>`;
 }
@@ -242,29 +240,10 @@ export async function loadDashboards() {
   await calculate();
 }
 
-async function loadOperations() {
-  const select = document.querySelector('#monitoring-dashboard-select');
+function loadOperations() {
   const frame = document.querySelector('#operations-dashboard');
-  const status = document.querySelector('#monitoring-status');
-  try {
-    const response = await fetch('/grafana/api/search?type=dash-db&limit=1000', { credentials: 'same-origin', cache: 'no-store' });
-    if (!response.ok) throw new Error('Не удалось загрузить Grafana.');
-    const dashboards = (await response.json()).filter(d => typeof d.title === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(d.uid));
-    if (!select.isConnected) return;
-    select.replaceChildren(...dashboards.map(d => new Option(d.title, d.uid)));
-    if (!dashboards.length) {
-      select.add(new Option('Дашбордов пока нет', ''));
-      select.disabled = true;
-    }
-    const show = () => {
-      if (!select.value) return;
-      const url = `/grafana/d/${encodeURIComponent(select.value)}?from=now-30d&to=now`;
-      document.querySelector('#monitoring-open').href = url;
-      frame.src = `${url}&kiosk&hideLogo=true`; frame.hidden = false;
-    };
-    select.addEventListener('change', show);
-    if (dashboards.some(d => d.uid === 'fastapi-observability')) select.value = 'fastapi-observability';
-    status.textContent = dashboards.length ? 'Сохранённые дашборды Grafana. Метрики качества моделей доступны в соседнем разделе.' : 'Сохранённых дашбордов пока нет.';
-    show();
-  } catch (error) { if (status.isConnected) status.textContent = error.message; }
+  const url = '/grafana/d/fastapi-observability?from=now-24h&to=now';
+  document.querySelector('#monitoring-open').href = url;
+  frame.src = `${url}&kiosk&hideLogo=true`;
+  frame.hidden = false;
 }

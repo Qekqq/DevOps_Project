@@ -237,6 +237,24 @@ def test_runtime_preserves_installed_https_settings(release, services, monkeypat
     assert "https://mloops.fun" not in json.dumps(config)
 
 
+def test_runtime_preserves_only_readonly_host_proxy_settings(release, services):
+    _, config = deploy.read_release(release)
+    target = "/etc/nginx/conf.d/10-host-proxy.conf"
+    source = "/opt/devops_project/deployment/nginx/frontend-proxy.conf"
+    installed = {"Destination": target, "Source": source, "Type": "bind", "RW": False}
+    services["frontend"] = {
+        "Mounts": [installed, {"Destination": "/etc/nginx/conf.d/default.conf"}]
+    }
+    runtime = deploy.configure_runtime(config, release, services)
+    assert runtime["services"]["frontend"]["volumes"] == [
+        {"type": "bind", "source": source, "target": target, "read_only": True}
+    ]
+    assert config["services"]["frontend"]["volumes"] == []
+    installed["RW"] = True
+    with pytest.raises(RuntimeError, match="proxy settings mount"):
+        deploy.configure_runtime(config, release, services)
+
+
 def test_existing_credentials_are_passed_only_in_environment(services, monkeypatch):
     monkeypatch.setenv("PUBLIC_ORIGIN", "https://accidental-local-change.example")
     env = deploy.service_environment(services)

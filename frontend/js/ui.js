@@ -54,10 +54,16 @@ export const fields = [
   ['glucose', 'Уровень глюкозы', 'мг/дл', 0, 600, 'any'],
   ['bmi', 'Индекс массы тела', 'кг/м²', 0, 100, 'any'],
   ['blood_pressure', 'Артериальное давление', 'мм рт. ст.', 0, 200, 'any'],
-  ['diabetes_pedigree_function', 'Наследственный фактор', '', 0, 3, 'any'],
+  ['diabetes_pedigree_function', 'Наследственный фактор', '', 0, 3, 0.001],
   ['skin_thickness', 'Толщина кожной складки', 'мм', 0, 110, 'any'],
   ['age', 'Возраст', 'лет', 1, 120, 1],
 ];
+export function fieldHint(key, min, max, step) {
+  const range = `${key === 'diabetes_pedigree_function' ? 'Больше 0' : 'От ' + min.toLocaleString('ru-RU')} до ${max.toLocaleString('ru-RU')}`;
+  const format = step === 1 ? 'целое число' : 'целое или дробное число';
+  const precision = key === 'diabetes_pedigree_function' ? ', не более 3 знаков после запятой' : '';
+  return `${range}; ${format}${precision}`;
+}
 export const sample = {
   pregnancies: 6,
   glucose: 148,

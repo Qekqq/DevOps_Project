@@ -224,6 +224,34 @@ def configure_runtime(config, folder, services):
     for mount in config["services"]["diabetes-api"]["volumes"]:
         if mount["target"] == "/app/data/feedback":
             mount["source"] = host_bind_source(feedback["Source"])
+    # The host TLS proxy is installation-specific. Keep only its small settings
+    # include; default.conf must continue to come from the new frontend image.
+    proxy_target = "/etc/nginx/conf.d/10-host-proxy.conf"
+    proxy_mounts = [
+        mount
+        for mount in services.get("frontend", {}).get("Mounts", [])
+        if mount["Destination"] == proxy_target
+    ]
+    if proxy_mounts:
+        if (
+            len(proxy_mounts) != 1
+            or proxy_mounts[0]["Type"] != "bind"
+            or proxy_mounts[0].get("RW", True)
+        ):
+            raise RuntimeError("Unexpected installed frontend proxy settings mount")
+        frontend = config["services"]["frontend"]
+        frontend["volumes"] = [
+            mount
+            for mount in frontend.get("volumes", [])
+            if mount["target"] != proxy_target
+        ] + [
+            {
+                "type": "bind",
+                "source": host_bind_source(proxy_mounts[0]["Source"]),
+                "target": proxy_target,
+                "read_only": True,
+            }
+        ]
     preserve_transport(config, services)
     preserve_identities(config, services, PROJECT)
     return config

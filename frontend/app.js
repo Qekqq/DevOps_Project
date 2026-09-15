@@ -597,10 +597,13 @@ function validateField(input, complete = false) {
     return;
   }
   if (input.name === 'diabetes_pedigree_function') {
+    input.setCustomValidity('');
     input.setCustomValidity(
-      input.value !== '' && Number(input.value) <= 0
+      input.value !== '' && (Number(input.value) <= 0 || Number(input.value) > 3)
         ? 'Значение должно быть больше 0 и не больше 3'
-        : '',
+        : input.validity.stepMismatch
+          ? 'Укажите не более 3 знаков после запятой, например 0,627'
+          : '',
     );
   }
   const target = document.getElementById(input.id + '-error');

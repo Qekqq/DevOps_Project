@@ -1,5 +1,6 @@
 """Резервная копия PostgreSQL без вывода паролей и данных в терминал."""
 
+import argparse
 import json
 import os
 import re
@@ -99,7 +100,11 @@ def create_database_backup(folder: Path, *, container: str | None = None) -> Pat
 
 def main():
     root = Path(__file__).resolve().parents[1]
-    path = create_database_backup(root / "backups")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--directory", type=Path, default=root / "backups")
+    parser.add_argument("--container", help="Имя установленного контейнера PostgreSQL")
+    args = parser.parse_args()
+    path = create_database_backup(args.directory, container=args.container)
     print(f"Архив создан, оглавление проверено: {path}")
     print("Это проверка формата архива; полное восстановление проверяется отдельно.")
 

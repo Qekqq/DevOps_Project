@@ -1,4 +1,4 @@
-import { html, icon, escape, brand, today, fields, outcomeBadge } from './ui.js';
+import { html, icon, escape, brand, today, fields, fieldHint, outcomeBadge } from './ui.js';
 export function login() {
   return html`
     <main class="login">
@@ -91,10 +91,7 @@ export function field([key, label, unit, min, max, step]) {
           : ''}
       </div>
       <small id="${key}-range">
-        ${key === 'diabetes_pedigree_function'
-          ? 'Больше 0'
-          : 'От ' + min.toLocaleString('ru-RU')}
-        до ${max.toLocaleString('ru-RU')}${step === 1 ? ', целое число' : ''}
+        ${fieldHint(key, min, max, step)}
       </small>
       <small id="${key}-error" class="field-error" aria-live="polite"></small>
     </div>
