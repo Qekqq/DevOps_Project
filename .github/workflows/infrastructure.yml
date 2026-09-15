@@ -1,6 +1,11 @@
 name: Infrastructure
 
 on:
+  # Explicit maintenance tags also work before this workflow reaches main.
+  push:
+    tags:
+      - 'infra-monitoring-*'
+      - 'infra-infrastructure-*'
   workflow_dispatch:
     inputs:
       group:
@@ -25,7 +30,7 @@ jobs:
       cancel-in-progress: false
     env:
       IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/devops_project
-      IMAGE_GROUP: ${{ inputs.group }}
+      IMAGE_GROUP: ${{ github.event_name == 'workflow_dispatch' && inputs.group || (startsWith(github.ref, 'refs/tags/infra-monitoring-') && 'monitoring' || 'infrastructure') }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -73,14 +78,14 @@ jobs:
         if: always()
         uses: ./.github/actions/security-report
         with:
-          name: infrastructure-security-${{ inputs.group }}-${{ github.sha }}
+          name: infrastructure-security-${{ env.IMAGE_GROUP }}-${{ github.sha }}
           scan-outcome: ${{ steps.infrastructure-scan.outcome == 'success' && steps.proxy-scan.outcome == 'success' && 'success' || 'failure' }}
           retention-days: 90
       - name: Состав служебных образов
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: infrastructure-images-${{ inputs.group }}-${{ github.sha }}
+          name: infrastructure-images-${{ env.IMAGE_GROUP }}-${{ github.sha }}
           path: .local-history/*-images.json
           include-hidden-files: true
           retention-days: 90
