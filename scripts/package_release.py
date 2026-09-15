@@ -72,6 +72,14 @@ def package_release(
             encoding="utf-8",
         )
     )
+    # Compose config expands implicit resource names using the build directory.
+    # Let -p select isolated resources for verification and production instead.
+    config.pop("name", None)
+    for kind in ("networks", "volumes"):
+        for name, resource in config.get(kind, {}).items():
+            if resource.get("external"):
+                raise ValueError(f"Release requires project-scoped {kind}: {name}")
+            resource.pop("name", None)
     if infrastructure_images is not None:
         apply_images(config, infrastructure_images)
     for name, service in config["services"].items():

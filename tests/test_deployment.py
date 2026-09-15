@@ -563,6 +563,15 @@ def test_package_pins_images_and_has_no_build_context(tmp_path, monkeypatch, pin
     (root / "models/current.json").write_text("{}")
     monkeypatch.setattr(module, "ROOT", root)
     config = {
+        "name": "devops_project",
+        "networks": {
+            "default": {"name": "devops_project_default"},
+            "docker-observe": {
+                "name": "devops_project_docker-observe",
+                "internal": True,
+            },
+        },
+        "volumes": {"pgdata": {"name": "devops_project_pgdata"}},
         "services": {
             "frontend": {"build": {"context": "frontend"}},
             "diabetes-api": {"build": {"context": "."}},
@@ -572,7 +581,7 @@ def test_package_pins_images_and_has_no_build_context(tmp_path, monkeypatch, pin
             "loki": {"build": {"context": "monitoring/loki"}},
             "alloy": {"build": {"context": "monitoring/alloy"}},
             "db": {"image": f"postgres:16@{DIGEST}" if pinned else "postgres:16"},
-        }
+        },
     }
     output = MagicMock(
         side_effect=[json.dumps(config), json.dumps([f"postgres@{DIGEST}"])]
@@ -592,6 +601,9 @@ def test_package_pins_images_and_has_no_build_context(tmp_path, monkeypatch, pin
         },
     )
     manifest, actual = deploy.read_release(folder, SHA, "123")
+    assert "name" not in actual
+    assert actual["networks"] == {"default": {}, "docker-observe": {"internal": True}}
+    assert actual["volumes"] == {"pgdata": {}}
     assert actual["services"]["docker-stats"]["image"] == f"example/api@{DIGEST}"
     assert actual["services"]["grafana"]["image"] == f"example/grafana@{DIGEST}"
     for name in ("prometheus", "loki", "alloy"):
@@ -612,3 +624,22 @@ def test_package_pins_images_and_has_no_build_context(tmp_path, monkeypatch, pin
     assert not (folder / "vault/notes.txt").exists()
     assert "current.json" in manifest["model_files"]
     assert not (folder / "models").exists()
+
+
+@pytest.mark.parametrize("kind", ["networks", "volumes"])
+def test_package_rejects_shared_external_resources(tmp_path, monkeypatch, kind):
+    from scripts import package_release as module
+
+    config = {
+        kind: {"shared": {"name": "production_resource", "external": True}},
+        "services": {},
+    }
+    monkeypatch.setattr(
+        module.subprocess, "check_output", lambda *a, **kw: json.dumps(config)
+    )
+    folder = tmp_path / "release"
+    with pytest.raises(ValueError, match=f"project-scoped {kind}"):
+        package_release(
+            folder, SHA, "123", f"example/api@{DIGEST}", f"example/frontend@{DIGEST}"
+        )
+    assert not folder.exists()
