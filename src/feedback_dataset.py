@@ -52,20 +52,28 @@ def read_confirmed_studies(db, *, date_from=None, date_to=None):
         query = query.where(Study.study_date >= date_from)
     if date_to is not None:
         query = query.where(Study.study_date <= date_to)
-    rows = db.execute(query).all()
-    return pd.DataFrame(
-        [
-            {
-                "study_id": study.id,
-                "patient_code": study.patient_code,
-                "study_date": study.study_date.isoformat(),
-                **{key: study.features[key] for key in FEATURE_COLUMNS},
-                "outcome": label,
-            }
-            for study, label in rows
-        ],
-        columns=["study_id", "patient_code", "study_date", *FEATURE_COLUMNS, "outcome"],
-    )
+    # Keep only one batch of ORM objects while constructing the dataset.
+    # The resulting DataFrame still contains the entire selected period.
+    with db.execute(query.execution_options(yield_per=1000)) as rows:
+        return pd.DataFrame(
+            (
+                {
+                    "study_id": study.id,
+                    "patient_code": study.patient_code,
+                    "study_date": study.study_date.isoformat(),
+                    **study.features,
+                    "outcome": label,
+                }
+                for study, label in rows
+            ),
+            columns=[
+                "study_id",
+                "patient_code",
+                "study_date",
+                *FEATURE_COLUMNS,
+                "outcome",
+            ],
+        )
 
 
 def save_snapshot(frame, directory, *, date_from=None, date_to=None, name=None):

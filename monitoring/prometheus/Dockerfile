@@ -12,6 +12,18 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
     go build -trimpath -tags netgo -ldflags "-s -w -X github.com/prometheus/common/version.Version=3.13.3-security.1" -o /out/prometheus ./cmd/prometheus \
     && go build -trimpath -tags netgo -ldflags "-s -w -X github.com/prometheus/common/version.Version=3.13.3-security.1" -o /out/promtool ./cmd/promtool
 
-FROM prom/prometheus:v3.13.3@sha256:6976aa8a60fec930796ce5772b8d12da7a318a5daa8d40d69c5c7819a05eeed7
+FROM prom/prometheus:v3.13.3@sha256:6976aa8a60fec930796ce5772b8d12da7a318a5daa8d40d69c5c7819a05eeed7 AS runtime
 COPY --from=build /out/prometheus /bin/prometheus
 COPY --from=build /out/promtool /bin/promtool
+
+# Copy the resulting filesystem, without the replaced upstream binaries in lower layers.
+FROM scratch
+COPY --from=runtime / /
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+USER nobody
+WORKDIR /prometheus
+VOLUME ["/prometheus"]
+EXPOSE 9090
+ENTRYPOINT ["/bin/prometheus"]
+CMD ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus"]
+LABEL org.opencontainers.image.source="https://github.com/prometheus/prometheus"

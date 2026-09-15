@@ -103,6 +103,8 @@ def test_feedback_release_trains_without_identity_and_preserves_groups(
         "src/config.py",
         "config.ini",
         "requirements.txt",
+        "requirements-runtime.txt",
+        "tests/requirements.txt",
     ]:
         target = tmp_path / name
         target.parent.mkdir(parents=True, exist_ok=True)

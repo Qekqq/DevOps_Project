@@ -211,6 +211,32 @@ def test_runtime_uses_versioned_config_and_preserves_feedback_location(
     assert "db-password" not in json.dumps(runtime)
 
 
+def test_runtime_preserves_installed_https_settings(release, services, monkeypatch):
+    _, config = deploy.read_release(release)
+    services["diabetes-api"]["Config"]["Env"] += [
+        "PUBLIC_ORIGIN=https://mloops.fun",
+        "SESSION_COOKIE_SECURE=true",
+    ]
+    services["grafana"] = {
+        "Config": {"Env": ["GF_SERVER_ROOT_URL=https://mloops.fun/grafana/"]}
+    }
+    monkeypatch.setenv("PUBLIC_ORIGIN", "https://wrong.example")
+    runtime = deploy.configure_runtime(config, release, services)
+    assert (
+        runtime["services"]["diabetes-api"]["environment"]["PUBLIC_ORIGIN"]
+        == "https://mloops.fun"
+    )
+    assert (
+        runtime["services"]["diabetes-api"]["environment"]["SESSION_COOKIE_SECURE"]
+        == "true"
+    )
+    assert (
+        runtime["services"]["grafana"]["environment"]["GF_SERVER_ROOT_URL"]
+        == "https://mloops.fun/grafana/"
+    )
+    assert "https://mloops.fun" not in json.dumps(config)
+
+
 def test_existing_credentials_are_passed_only_in_environment(services, monkeypatch):
     monkeypatch.setenv("PUBLIC_ORIGIN", "https://accidental-local-change.example")
     env = deploy.service_environment(services)
@@ -391,6 +417,28 @@ def test_backup_precedes_every_database_change_and_container_update(
     assert state["database_backup"] == str(backup_path)
 
 
+@pytest.mark.parametrize("ready", [True, False])
+def test_retention_runs_only_after_success_is_recorded(
+    release, deployment, monkeypatch, ready
+):
+    _, health = deployment
+
+    def cleanup(home):
+        assert json.loads((home / "current.json").read_text())["commit"] == SHA
+        return 0
+
+    prune = MagicMock(side_effect=cleanup)
+    monkeypatch.setattr(deploy, "prune_release_backups", prune)
+    if not ready:
+        health.side_effect = RuntimeError("not ready")
+        with pytest.raises(RuntimeError, match="not ready"):
+            deploy.deploy(release, SHA, "123")
+        prune.assert_not_called()
+    else:
+        deploy.deploy(release, SHA, "123")
+        prune.assert_called_once()
+
+
 def test_failed_backup_blocks_database_changes_and_container_update(
     release, deployment
 ):
@@ -488,9 +536,11 @@ def test_package_pins_images_and_has_no_build_context(tmp_path, monkeypatch, pin
     from scripts import package_release as module
 
     root = tmp_path / "source"
-    for name in ("monitoring", "vault", "db"):
-        (root / name).mkdir(parents=True)
-        (root / name / "config.txt").write_text("settings")
+    for name in module.RUNTIME_FILES:
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text("settings")
+    (root / "monitoring/Dockerfile").write_text("not runtime")
+    (root / "vault/notes.txt").write_text("not runtime")
     (root / "models").mkdir()
     (root / "models/current.json").write_text("{}")
     monkeypatch.setattr(module, "ROOT", root)
@@ -539,6 +589,8 @@ def test_package_pins_images_and_has_no_build_context(tmp_path, monkeypatch, pin
         module.subprocess.run.assert_called_once_with(
             ["docker", "pull", "postgres:16"], check=True
         )
-    assert len(manifest["files"]) == 4
+    assert set(manifest["files"]) == {"docker-compose.json", *module.RUNTIME_FILES}
+    assert not (folder / "monitoring/Dockerfile").exists()
+    assert not (folder / "vault/notes.txt").exists()
     assert "current.json" in manifest["model_files"]
     assert not (folder / "models").exists()

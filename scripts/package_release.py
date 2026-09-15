@@ -12,6 +12,19 @@ from scripts.infrastructure_release import apply_images
 from scripts.model_delivery import inventory
 
 ROOT = Path(__file__).resolve().parents[1]
+RUNTIME_FILES = (
+    "db/01_schema.sql",
+    "db/02_audit.sql",
+    "vault/server.hcl",
+    "vault/server-tls.hcl",
+    "vault/tls.compose.yml",
+    "monitoring/alloy/config.alloy",
+    "monitoring/docker-proxy/nginx.conf",
+    "monitoring/loki/config.yml",
+    "monitoring/prometheus/prometheus.yml",
+    "monitoring/grafana/provisioning/datasources/loki.yml",
+    "monitoring/grafana/provisioning/datasources/prometheus.yml",
+)
 
 
 def package_release(
@@ -103,8 +116,12 @@ def package_release(
             )
             service["image"] = digests[0]
     output.mkdir(parents=True, exist_ok=False)
-    for directory in ("monitoring", "vault", "db"):
-        shutil.copytree(ROOT / directory, output / directory)
+    for name in RUNTIME_FILES:
+        source, destination = ROOT / name, output / name
+        if source.is_symlink() or not source.is_file():
+            raise ValueError(f"Runtime configuration must be a regular file: {name}")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
     (output / "docker-compose.json").write_text(
         json.dumps(config, ensure_ascii=False, indent=2),
         encoding="utf-8",

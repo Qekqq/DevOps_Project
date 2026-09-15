@@ -19,7 +19,8 @@ def root(tmp_path):
 def test_application_or_audit_edit_does_not_require_infrastructure_migration(root):
     before = {name: cache.fingerprint(name, root) for name in cache.INPUTS}
     (root / "frontend.js").write_text("new application text")
-    (root / "vault/REVIEW.md").write_text("updated audit notes")
+    (root / "README.md").write_text("updated project documentation")
+    (root / "vault/review_binary.go").write_text("updated evidence collector")
     assert before == {name: cache.fingerprint(name, root) for name in cache.INPUTS}
     (root / "kafka/artifacts.lock.json").write_text("new dependencies")
     assert cache.fingerprint("kafka", root) != before["kafka"]

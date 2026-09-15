@@ -1,25 +1,6 @@
-fastapi==0.136.3
-uvicorn==0.49.0
-pydantic==2.13.4
-
-pandas==3.0.3
-numpy==2.4.6
-scikit-learn==1.9.0
-joblib==1.5.3
-
-pytest==9.0.3
-httpx==0.28.1
+# Среда разработки и обучения включает рабочие зависимости и тесты.
+-r requirements-runtime.txt
+-r tests/requirements.txt
 
 dvc[webdav]==3.67.1
-
-
-SQLAlchemy==2.0.50
-psycopg2-binary==2.9.12
-
-hvac==2.4.0
 cryptography==50.0.1
-requests==2.34.2
-
-kafka-python==2.3.2
-prometheus-client==0.26.0
-evidently==0.7.23

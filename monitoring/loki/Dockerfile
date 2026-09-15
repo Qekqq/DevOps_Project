@@ -10,5 +10,16 @@ ENV GOMAXPROCS=2 CGO_ENABLED=0 GOFLAGS=-mod=mod
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     make BUILD_IN_CONTAINER=false GOFLAGS=-mod=mod IMAGE_TAG=3.7.7-security.1 loki
 
-FROM grafana/loki:3.7.7@sha256:d70e4659623f3e109af669cae76fe2a5dd5be54e2298fe8aed380d982fbc2500
+FROM grafana/loki:3.7.7@sha256:d70e4659623f3e109af669cae76fe2a5dd5be54e2298fe8aed380d982fbc2500 AS runtime
 COPY --from=build --chown=10001:10001 /src/loki-3.7.7/cmd/loki/loki /usr/bin/loki
+
+FROM scratch
+COPY --from=runtime / /
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+USER 10001
+WORKDIR /
+EXPOSE 3100
+ENTRYPOINT ["/usr/bin/loki"]
+CMD ["-config.file=/etc/loki/local-config.yaml"]
+LABEL org.opencontainers.image.source="https://github.com/grafana/loki"

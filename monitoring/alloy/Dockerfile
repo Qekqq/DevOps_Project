@@ -21,5 +21,14 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
     GO_TAGS="netgo embedalloyui promtail_journal_enabled" \
     SKIP_UI_BUILD=1 SKIP_CODE_GENERATION=1 make alloy
 
-FROM grafana/alloy:v1.19.2@sha256:b8ec653c44235fbe910879145dac3597d66b0aaecf60bcbbe82580767771a839
+FROM grafana/alloy:v1.19.2@sha256:b8ec653c44235fbe910879145dac3597d66b0aaecf60bcbbe82580767771a839 AS runtime
 COPY --from=build --chown=473:473 /src/alloy-1.19.2/build/alloy /bin/alloy
+
+# Preserve the resulting root filesystem, excluding replaced lower-layer binaries.
+FROM scratch
+COPY --from=runtime / /
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    ALLOY_DEPLOY_MODE=docker
+ENTRYPOINT ["/bin/alloy"]
+CMD ["run", "/etc/alloy/config.alloy", "--storage.path=/var/lib/alloy/data"]
+LABEL org.opencontainers.image.source="https://github.com/grafana/alloy"

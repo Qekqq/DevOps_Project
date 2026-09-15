@@ -5,6 +5,8 @@ stages:
       - data/raw/diabetes.csv
       - config.ini
       - requirements.txt
+      - requirements-runtime.txt
+      - tests/requirements.txt
       - src/config.py
       - src/features.py
       - src/datasets.py

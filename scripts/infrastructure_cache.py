@@ -25,7 +25,7 @@ MONITORING_INPUTS = {
     "loki": {"Dockerfile", "config.yml"},
     "alloy": {"Dockerfile", "config.alloy"},
 }
-AUDIT_FILES = {"README.md", "REVIEW.md", "SECURITY.md", "review_binary.go"}
+AUDIT_FILES = {"review_binary.go"}
 LABEL = "io.devops.infrastructure.source"
 
 

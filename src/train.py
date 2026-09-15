@@ -164,6 +164,8 @@ def train_release(feedback_snapshot=None):
         "config.ini",
         "training.json",
         "requirements.txt",
+        "requirements-runtime.txt",
+        "tests/requirements.txt",
     ]
     provenance = {
         "git_commit": subprocess.check_output(

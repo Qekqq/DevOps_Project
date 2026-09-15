@@ -15,7 +15,7 @@ import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
 
-from scripts.backup_database import create_database_backup
+from scripts.backup_database import create_database_backup, prune_release_backups
 from scripts.maintenance_client import installed_admin_credentials, run_maintenance
 from scripts.model_delivery import stage_models
 from scripts.vault_connection import (
@@ -161,6 +161,22 @@ def service_environment(services):
 
 def configure_runtime(config, folder, services):
     config = json.loads(json.dumps(config))
+    # Public endpoints belong to the installation, not the CI test environment.
+    for name, keys in (
+        ("diabetes-api", ("PUBLIC_ORIGIN", "SESSION_COOKIE_SECURE")),
+        ("grafana", ("GF_SERVER_ROOT_URL",)),
+    ):
+        settings = dict(
+            item.split("=", 1)
+            for item in services.get(name, {}).get("Config", {}).get("Env", [])
+            if "=" in item
+        )
+        if name in config["services"]:
+            for key in keys:
+                if key in settings:
+                    config["services"][name].setdefault("environment", {})[key] = (
+                        settings[key]
+                    )
     # A completed infrastructure migration may use new explicitly named volumes.
     # Carry those mounts forward instead of reverting to the old Compose names.
     paths = {
@@ -513,6 +529,17 @@ def deploy(folder, expected_commit, expected_run, *, preflight=False):
         temporary = home / "current.tmp"
         temporary.write_text(json.dumps(state, indent=2), encoding="utf-8")
         temporary.replace(home / "current.json")
+        try:
+            removed = prune_release_backups(home)
+            print(
+                f"Удалено старых резервных копий: {removed}. Сохраняются последние две и копии восстановления миграций."
+            )
+        except (OSError, ValueError):
+            # A successful deployment must not be reported as failed merely
+            # because a retained backup is locked or recovery metadata is invalid.
+            print(
+                "Обновление успешно; очистка старых копий не завершена. Проверьте каталог резервных копий."
+            )
         print(f"Приложение обновлено до {manifest['commit']}. Готовность подтверждена.")
 
 

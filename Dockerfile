@@ -4,6 +4,7 @@ COPY requirements-runtime.txt /tmp/requirements-runtime.txt
 RUN python -m venv /opt/venv && \
     /opt/venv/bin/pip install --no-cache-dir -r /tmp/requirements-runtime.txt && \
     /opt/venv/bin/pip uninstall -y pip setuptools wheel
+RUN chmod -R a-w /opt/venv
 COPY src/ /runtime/src/
 RUN rm /runtime/src/train.py /runtime/src/data_preprocessing.py && \
     echo 'from src.clinical_features_v1 import ClinicalFeatures' > /runtime/src/pipelines.py
@@ -26,7 +27,6 @@ ENV PATH="/opt/venv/bin:$PATH" \
     DO_NOT_TRACK=1
 
 COPY --from=dependencies /opt/venv /opt/venv
-RUN chmod -R a-w /opt/venv
 COPY --from=dependencies /runtime/src/ ./src/
 # Training provenance is delivered alongside models and validated at registration.
 COPY config.ini runtime-logging.json ./

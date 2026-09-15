@@ -1,7 +1,7 @@
 import json
 from datetime import date
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 import pandas as pd
 import pytest
@@ -139,7 +139,9 @@ def test_export_uses_one_label_per_study_without_prediction_join():
         features={key: 1 for key in FEATURE_COLUMNS},
     )
     db = Mock()
-    db.execute.return_value.all.return_value = [(study, 0)]
+    result = MagicMock()
+    result.__enter__.return_value = iter([(study, 0)])
+    db.execute.return_value = result
     frame = read_confirmed_studies(db)
     assert len(frame) == 1
     assert frame.iloc[0]["outcome"] == 0

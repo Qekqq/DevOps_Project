@@ -1,5 +1,5 @@
 # Rebuild only the backend: upstream 13.2.1 still embeds vulnerable Go modules.
-# Keep the official frontend and signed datasource plugins. See SECURITY.md.
+# Keep the official frontend and signed datasource plugins. See the root README.
 FROM golang:1.26.7-alpine@sha256:28d89ee9cc0ff9fec75c82ca201e6bf7fdf9a679d4b7b24dfa04f2bb766bb468 AS backend
 RUN apk add --no-cache make git gcc musl-dev
 ADD --checksum=sha256:4b410340987a5d8090d5b39d9312095b1009f20f2e27c9a50f65da6cf74a9962 \
@@ -26,7 +26,7 @@ ADD --chown=472:0 --checksum=sha256:33c5316c52e8745e38ea844d5357723c0ebe15ce28cd
 RUN unzip -q /tmp/loki.zip -d /tmp/plugins \
     && unzip -q /tmp/prometheus.zip -d /tmp/plugins
 
-FROM grafana/grafana:13.2.1-slim@sha256:2b2ca79d6fcd9b0f5d16dc8c839b46c93d2a85e72f4cef35ae4c4be0ebe65dfc
+FROM grafana/grafana:13.2.1-slim@sha256:2b2ca79d6fcd9b0f5d16dc8c839b46c93d2a85e72f4cef35ae4c4be0ebe65dfc AS runtime
 
 # Install at build time: the scanned release works without downloading plugins
 # during deployment. Grafana still verifies the publisher's plugin signature.
@@ -39,3 +39,22 @@ COPY --from=plugins --chown=472:0 /tmp/plugins /opt/grafana-plugins
 ENV GF_PATHS_PLUGINS=/opt/grafana-plugins \
     GF_PLUGINS_PREINSTALL_DISABLED=true \
     GF_PLUGINS_PREINSTALL_AUTO_UPDATE=false
+
+# Keep the upstream UI, signed plugins, OS libraries and permissions, without
+# shipping the overwritten upstream backend in another final-image layer.
+FROM scratch
+COPY --from=runtime / /
+ENV PATH=/usr/share/grafana/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    GF_PATHS_CONFIG=/etc/grafana/grafana.ini \
+    GF_PATHS_DATA=/var/lib/grafana \
+    GF_PATHS_HOME=/usr/share/grafana \
+    GF_PATHS_LOGS=/var/log/grafana \
+    GF_PATHS_PLUGINS=/opt/grafana-plugins \
+    GF_PATHS_PROVISIONING=/etc/grafana/provisioning \
+    GF_PLUGINS_PREINSTALL_DISABLED=true \
+    GF_PLUGINS_PREINSTALL_AUTO_UPDATE=false
+USER 472
+WORKDIR /usr/share/grafana
+EXPOSE 3000
+ENTRYPOINT ["/run.sh"]
+LABEL org.opencontainers.image.source="https://github.com/grafana/grafana"
