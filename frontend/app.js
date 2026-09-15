@@ -15,7 +15,7 @@ import {
   snapshotDialog,
 } from './js/history.js';
 import { studyCard, predictionRows } from './js/study-card.js';
-import { monitoring } from './js/monitoring.js';
+import { monitoring, loadDashboards } from './js/monitoring.js';
 
 const app = document.querySelector('#app');
 const titles = {
@@ -171,6 +171,7 @@ function render() {
         ? historyView(state.filters)
         : monitoring();
   app.innerHTML = shell(content);
+  if (state.route === 'monitoring') loadDashboards();
   checkConnection();
   if (state.user.role !== 'admin')
     app.querySelectorAll('a[href="#history"]').forEach((link) => link.remove());
@@ -596,10 +597,13 @@ function validateField(input, complete = false) {
     return;
   }
   if (input.name === 'diabetes_pedigree_function') {
+    input.setCustomValidity('');
     input.setCustomValidity(
-      input.value !== '' && Number(input.value) <= 0
+      input.value !== '' && (Number(input.value) <= 0 || Number(input.value) > 3)
         ? 'Значение должно быть больше 0 и не больше 3'
-        : '',
+        : input.validity.stepMismatch
+          ? 'Укажите не более 3 знаков после запятой, например 0,627'
+          : '',
     );
   }
   const target = document.getElementById(input.id + '-error');

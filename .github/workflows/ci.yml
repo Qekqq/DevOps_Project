@@ -39,12 +39,13 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install -r requirements-security.txt
           pip install ruff==0.16.6
 
       - name: Проверка кода и схемы БД
         run: |
-          python -m ruff check src scripts tests notebooks
-          python -m ruff format --check src scripts tests notebooks
+          python -m ruff check src scripts tests notebooks infrastructure
+          python -m ruff format --check src scripts tests notebooks infrastructure
           python -m scripts.generate_schema --check
 
       - name: Загрузка выпуска моделей
@@ -70,6 +71,10 @@ jobs:
     name: Сборка и публикация Docker-образа
     runs-on: ubuntu-latest
     needs: test
+    timeout-minutes: 45
+    concurrency:
+      group: infrastructure-images-${{ github.repository }}
+      cancel-in-progress: false
     permissions:
       contents: read
 
@@ -92,18 +97,19 @@ jobs:
           password: ${{ secrets.DVC_YANDEX_PASSWORD }}
 
       - name: Вход в Docker Hub
-        if: ${{ github.event_name != 'pull_request' }}
+        # This job only runs for this repository's trusted branches/PRs.
+        # Read access is also required to reuse private infrastructure images.
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Сборка и публикация Docker-образа
+      - name: Сборка Docker-образа для проверки
         id: api-image
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: ${{ github.event_name != 'pull_request' }}
+          load: true
           tags: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
           labels: org.opencontainers.image.revision=${{ github.sha }}
 
@@ -112,14 +118,40 @@ jobs:
           docker build --label "org.opencontainers.image.revision=$IMAGE_TAG" -t "$IMAGE_NAME-frontend:$IMAGE_TAG" ./frontend
           docker run --rm "$IMAGE_NAME-frontend:$IMAGE_TAG" nginx -t
 
+      - name: Проверка уязвимостей до публикации
+        id: application-scan
+        run: |
+          python -m scripts.scan_images "$IMAGE_NAME:$IMAGE_TAG" "$IMAGE_NAME-frontend:$IMAGE_TAG" --output .local-history/security-scans/application
+
+      - name: Точные ссылки на опубликованный мониторинг и инфраструктуру
+        # Read registry manifests only; no layer download, build or rescan.
+        run: |
+          python -m scripts.infrastructure_cache resolve --group monitoring --repository "$IMAGE_NAME"
+          python -m scripts.infrastructure_cache resolve --repository "$IMAGE_NAME"
+
+      - name: Отчёты сканирования
+        if: always()
+        uses: ./.github/actions/security-report
+        with:
+          name: security-${{ github.sha }}
+          scan-outcome: ${{ steps.application-scan.outcome }}
+          retention-days: 14
+
       - name: Публикация frontend и подготовка пакета выкладки
         if: ${{ github.event_name != 'pull_request' }}
-        env:
-          API_DIGEST: ${{ steps.api-image.outputs.digest }}
         run: |
+          docker push "$IMAGE_NAME:$IMAGE_TAG"
           docker push "$IMAGE_NAME-frontend:$IMAGE_TAG"
+          API_IMAGE=$(docker image inspect "$IMAGE_NAME:$IMAGE_TAG" --format '{{index .RepoDigests 0}}')
           FRONTEND_IMAGE=$(docker image inspect "$IMAGE_NAME-frontend:$IMAGE_TAG" --format '{{index .RepoDigests 0}}')
-          python -m scripts.package_release --output release --commit "$IMAGE_TAG" --run-id "$GITHUB_RUN_ID" --api-image "$IMAGE_NAME@$API_DIGEST" --frontend-image "$FRONTEND_IMAGE"
+          GRAFANA_IMAGE=$(python -c 'import json; print(json.load(open(".local-history/monitoring-images.json"))["images"]["grafana"]["reference"])')
+          PROMETHEUS_IMAGE=$(python -c 'import json; print(json.load(open(".local-history/monitoring-images.json"))["images"]["prometheus"]["reference"])')
+          LOKI_IMAGE=$(python -c 'import json; print(json.load(open(".local-history/monitoring-images.json"))["images"]["loki"]["reference"])')
+          ALLOY_IMAGE=$(python -c 'import json; print(json.load(open(".local-history/monitoring-images.json"))["images"]["alloy"]["reference"])')
+          POSTGRES_IMAGE=$(python -c 'import json; print(json.load(open(".local-history/infrastructure-images.json"))["images"]["postgres"]["reference"])')
+          KAFKA_IMAGE=$(python -c 'import json; print(json.load(open(".local-history/infrastructure-images.json"))["images"]["kafka"]["reference"])')
+          VAULT_IMAGE=$(python -c 'import json; print(json.load(open(".local-history/infrastructure-images.json"))["images"]["vault"]["reference"])')
+          python -m scripts.package_release --output release --commit "$IMAGE_TAG" --run-id "$GITHUB_RUN_ID" --api-image "$API_IMAGE" --frontend-image "$FRONTEND_IMAGE" --grafana-image "$GRAFANA_IMAGE" --prometheus-image "$PROMETHEUS_IMAGE" --loki-image "$LOKI_IMAGE" --alloy-image "$ALLOY_IMAGE" --postgres-image "$POSTGRES_IMAGE" --kafka-image "$KAFKA_IMAGE" --vault-image "$VAULT_IMAGE"
 
       - name: Сохранение точных образов и настроек выпуска
         if: ${{ github.event_name != 'pull_request' }}
@@ -127,5 +159,5 @@ jobs:
         with:
           name: release-${{ github.sha }}
           path: release/
-          retention-days: 30
+          retention-days: 90
           if-no-files-found: error

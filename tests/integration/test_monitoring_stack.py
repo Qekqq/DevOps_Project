@@ -213,7 +213,7 @@ def test_monitoring_stack():
     while time.monotonic() < deadline:
         response = requests.get(
             "http://prometheus:9090/api/v1/query",
-            params={"query": "diabetes_quality_collection_success"},
+            params={"query": 'up{job="diabetes-exporter"}'},
             timeout=5,
         )
         result = response.json()["data"]["result"]
@@ -221,9 +221,9 @@ def test_monitoring_stack():
             break
         time.sleep(2)
     else:
-        raise AssertionError("Prometheus не получил агрегаты из БД")
+        raise AssertionError("Prometheus не получил технические метрики экспортёра")
     assert (
-        requests.get("http://frontend/grafana/api/health", timeout=10).status_code
+        requests.get("http://frontend:8080/grafana/api/health", timeout=10).status_code
         == 401
     )
     factory = get_session_factory()
@@ -235,25 +235,96 @@ def test_monitoring_stack():
                     username=username, password_hash=hash_password(password), role=role
                 )
             )
+            if role == "admin":
+                # A known result exercises the on-demand monitoring API,
+                # including an empty following day, not merely a successful query.
+                champion = db.scalar(
+                    select(ModelVersion).where(ModelVersion.role == "champion")
+                )
+                champion_version = champion.model_version
+                study = Study(
+                    patient_code="GFM001",
+                    study_date=date(1970, 1, 1),
+                    features=dict(
+                        pregnancies=0,
+                        glucose=120,
+                        blood_pressure=70,
+                        skin_thickness=20,
+                        insulin=0,
+                        bmi=30,
+                        diabetes_pedigree_function=0.5,
+                        age=40,
+                    ),
+                )
+                db.add(study)
+                db.flush()
+                db.add(PredictionFeedback(study_id=study.id, true_label=1))
+                db.add(
+                    PredictionHistory(
+                        study_id=study.id,
+                        model_version_id=champion.id,
+                        role_at_prediction="champion",
+                        prediction=1,
+                        probability=0.9,
+                    )
+                )
             db.commit()
         try:
             with requests.Session() as client:
                 login = client.post(
-                    "http://frontend/api/auth/login",
+                    "http://frontend:8080/api/auth/login",
                     json={"username": username, "password": password},
                     headers={"X-Requested-With": "DiabetesPredict"},
                     timeout=10,
                 )
                 assert login.status_code == 200
-                response = client.get("http://frontend/grafana/api/user", timeout=10)
+                response = client.get(
+                    "http://frontend:8080/grafana/api/user", timeout=10
+                )
                 assert response.status_code == expected
                 if role == "admin":
+                    # Slim Grafana supplies these as separately signed plugins.
+                    # Exercise the backend through Grafana, not just the services.
+                    for uid in ("prometheus", "loki"):
+                        health = client.get(
+                            "http://frontend:8080/grafana/api/datasources/uid/"
+                            + uid
+                            + "/health",
+                            timeout=30,
+                        )
+                        assert health.status_code == 200, health.text
+                        assert health.json()["status"] == "OK", health.text
+                    metrics = client.get(
+                        "http://frontend:8080/api/monitoring/model-report",
+                        params=dict(
+                            model_version=champion_version,
+                            time_axis="study_date",
+                            date_from="1970-01-01",
+                            date_to="1970-01-02",
+                            resolution="day",
+                        ),
+                        timeout=60,
+                    )
+                    assert metrics.status_code == 200, metrics.text
+                    report = metrics.json()
+                    assert report["summary"]["metrics"]["accuracy"] == 1
+                    assert [p["evaluated"] for p in report["points"]] == [1, 0]
+                    assert report["points"][1]["metrics"]["accuracy"] is None
+                    assert "GFM001" not in metrics.text
+                    assert metrics.headers["Cache-Control"] == "no-store"
+                    assert (
+                        requests.get(
+                            "http://frontend:8080/api/monitoring/model-report",
+                            timeout=10,
+                        ).status_code
+                        == 401
+                    )
                     orgs = client.get(
-                        "http://frontend/grafana/api/user/orgs", timeout=10
+                        "http://frontend:8080/grafana/api/user/orgs", timeout=10
                     ).json()
                     assert any(org["role"] == "Editor" for org in orgs)
                     created = client.post(
-                        "http://frontend/grafana/api/dashboards/db",
+                        "http://frontend:8080/grafana/api/dashboards/db",
                         json={
                             "dashboard": {
                                 "title": "Проверка сохранения",
@@ -268,21 +339,21 @@ def test_monitoring_stack():
                     dashboard_uid = created.json()["uid"]
                     assert (
                         client.delete(
-                            "http://frontend/grafana/api/dashboards/uid/"
+                            "http://frontend:8080/grafana/api/dashboards/uid/"
                             + dashboard_uid,
                             timeout=10,
                         ).status_code
                         == 200
                     )
                 logout = client.post(
-                    "http://frontend/api/auth/logout",
+                    "http://frontend:8080/api/auth/logout",
                     headers={"X-CSRF-Token": login.json()["csrf_token"]},
                     timeout=10,
                 )
                 assert logout.status_code == 204
                 assert (
                     client.get(
-                        "http://frontend/grafana/api/health", timeout=10
+                        "http://frontend:8080/grafana/api/health", timeout=10
                     ).status_code
                     == 401
                 )
@@ -295,7 +366,7 @@ def test_monitoring_stack():
 
 
 def test_container_cpu_covers_all_services():
-    """cAdvisor передаёт CPU всех сервисов, включая инфраструктуру проекта."""
+    """Docker API передаёт CPU всех сервисов, включая инфраструктуру проекта."""
     expected = {
         "alloy",
         "db",
@@ -308,6 +379,8 @@ def test_container_cpu_covers_all_services():
         "metrics-exporter",
         "prometheus",
         "vault",
+        "docker-proxy",
+        "docker-stats",
     }
     deadline = time.monotonic() + 120
     services = set()
@@ -334,7 +407,7 @@ def test_container_cpu_covers_all_services():
 
 def test_operational_metrics_and_logs_arrive():
     # Запрос без сессии даёт безопасное событие 401, не меняя исследования.
-    response = requests.get("http://frontend/api/studies", timeout=10)
+    response = requests.get("http://frontend:8080/api/studies", timeout=10)
     assert response.status_code == 401
     correlation = response.headers["X-Request-ID"]
     deadline = time.monotonic() + 90

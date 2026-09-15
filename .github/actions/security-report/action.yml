@@ -1,0 +1,44 @@
+name: Security PDF report
+description: Save readable vulnerability reports even when the scan blocks publication
+inputs:
+  name:
+    description: Artifact name
+    required: true
+  scan-outcome:
+    description: Outcome of all required scanning steps
+    required: true
+  retention-days:
+    description: Artifact retention
+    default: '30'
+runs:
+  using: composite
+  steps:
+    - name: Зависимости PDF только на runner
+      if: ${{ !cancelled() }}
+      shell: bash
+      run: |
+        python -m pip install -r requirements-security.txt
+        if [ ! -f /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf ]; then
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fonts-dejavu-core
+        fi
+    - name: Формирование PDF
+      if: ${{ !cancelled() }}
+      shell: bash
+      env:
+        SCAN_OUTCOME: ${{ inputs.scan-outcome }}
+        REPORT_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        python -m scripts.security_report --input .local-history/security-scans --output .local-history/security-scans/security-report.pdf --scan-outcome "$SCAN_OUTCOME" --run-url "$REPORT_RUN_URL"
+    - name: PDF и исходные результаты сканера
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.name }}
+        path: |
+          .local-history/security-scans/security-report.pdf
+          .local-history/security-scans/**/report.json
+          .local-history/security-scans/**/scan-status.json
+        include-hidden-files: true
+        retention-days: ${{ inputs.retention-days }}
+        if-no-files-found: warn

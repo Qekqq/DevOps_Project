@@ -1,4 +1,4 @@
-import { html, icon, escape, fields, formatDate, percentage, outcomeBadge } from './ui.js';
+import { html, icon, escape, fields, fieldHint, formatDate, percentage, outcomeBadge } from './ui.js';
 
 export function predictionRows(predictions) {
   return predictions
@@ -57,8 +57,7 @@ export function studyCard(study, role) {
                           aria-describedby="edit-${key}-range edit-${key}-error"
                         />
                         <small id="edit-${key}-range" class="muted">
-                          ${key === 'diabetes_pedigree_function' ? 'Больше 0' : 'От ' + min} до
-                          ${max} ${unit}
+                          ${fieldHint(key, min, max, step)}
                         </small>
                         <small
                           id="edit-${key}-error"

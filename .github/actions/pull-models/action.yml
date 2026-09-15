@@ -17,7 +17,5 @@ runs:
         DVC_YANDEX_PASSWORD: ${{ inputs.password }}
       run: |
         set -euo pipefail
-        trap 'rm -f .dvc/config.local' EXIT
-        python scripts/configure_dvc_yandex.py --from-env
-        python -m dvc pull models
+        python -m scripts.fetch_models
         python -m src.register_release models/current.json

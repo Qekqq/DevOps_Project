@@ -1,5 +1,8 @@
 """Ротация обычного журнала нескольких модулей и разделение сервисов."""
 
+import json
+import logging
+from datetime import datetime
 from uuid import uuid4
 
 import pytest
@@ -37,14 +40,21 @@ def loggers(tmp_path, monkeypatch):
 def test_modules_continue_logging_after_repeated_rotation(tmp_path, loggers):
     first, second = loggers("api"), loggers("api")
     for index in range(40):
-        (first if index % 2 == 0 else second).info("Запись %03d %s", index, "x" * 120)
+        record = logging.LogRecord("probe", logging.INFO, "", 0, "private", (), None)
+        record.created = index
+        (first if index % 2 == 0 else second).handle(record)
     files = sorted(tmp_path.iterdir())
     assert [path.name for path in files] == ["api.log", "api.log.1", "api.log.2"]
     assert all(0 < path.stat().st_size <= 512 for path in files)
     content = "\n".join(path.read_text(encoding="utf-8") for path in files)
-    assert "Запись 038" in content
-    assert "Запись 039" in content
-    assert "Запись 000" not in content
+    timestamps = {
+        datetime.fromisoformat(json.loads(line)["timestamp"]).timestamp()
+        for line in content.splitlines()
+        if line
+    }
+    assert {38, 39} <= timestamps
+    assert 0 not in timestamps
+    assert "private" not in content
 
 
 def test_rotating_one_service_preserves_other_service_logs(tmp_path, loggers):
@@ -55,7 +65,7 @@ def test_rotating_one_service_preserves_other_service_logs(tmp_path, loggers):
     api = loggers("api")
     for index in range(20):
         api.info("api %s %s", index, "x" * 180)
-    assert "consumer record" in (tmp_path / "consumer.log").read_text()
+    assert json.loads((tmp_path / "consumer.log").read_text())["service"] == "consumer"
     assert "local record" in (tmp_path / "app.log").read_text()
     assert not (tmp_path / "consumer.log.1").exists()
     assert not (tmp_path / "app.log.1").exists()

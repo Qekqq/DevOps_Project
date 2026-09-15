@@ -98,7 +98,7 @@ def present_snapshot(snapshot):
 
 
 def read_model_health_history(
-    db, *, date_from, date_to, group_by="day", model_version=None
+    db, *, date_from, date_to, group_by="day", model_version=None, include_points=True
 ):
     """Каждый интервал и итог считаются из БД, без усреднения готовых метрик."""
     buckets = period_buckets(date_from, date_to, group_by)
@@ -119,6 +119,8 @@ def read_model_health_history(
         result = read_model_health(
             db, model_id=model.id, start=start, end=end, reference_cache=cache
         )
+        if time.monotonic() > deadline:
+            raise TimeoutError("Расчёт занял слишком много времени; сократите период")
         if result["reference"] is None:
             raise ValueError("Не найден обучающий эталон модели")
         return result
@@ -151,7 +153,9 @@ def read_model_health_history(
                 "points": [
                     present_snapshot(snapshot(model, start, end))
                     for start, end in buckets
-                ],
+                ]
+                if include_points
+                else [],
             }
         )
     return result

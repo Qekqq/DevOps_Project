@@ -20,6 +20,22 @@ def test_daily_period_contains_both_dates_without_overlap():
     assert len(period_buckets(date(2026, 9, 9), date(2026, 9, 9))) == 1
 
 
+def test_history_limits_parallel_calculations_and_releases_slot(api):
+    _, client, _, reader = api
+    assert monitoring.history_slots.acquire(blocking=False)
+    assert monitoring.history_slots.acquire(blocking=False)
+    try:
+        assert client.get("/monitoring/model-health").status_code == 503
+        reader.assert_not_called()
+    finally:
+        monitoring.history_slots.release()
+        monitoring.history_slots.release()
+    reader.side_effect = ValueError("bad reference")
+    assert client.get("/monitoring/model-health").status_code == 503
+    reader.side_effect = None
+    assert client.get("/monitoring/model-health").status_code == 200
+
+
 def test_calendar_months_are_clipped_and_include_leap_day():
     assert period_buckets(date(2023, 12, 15), date(2024, 3, 2), "month") == [
         (date(2023, 12, 15), date(2024, 1, 1)),
@@ -165,6 +181,7 @@ def test_valid_filters_and_failure_without_private_details(api):
         "date_to": date(2026, 9, 9),
         "group_by": "month",
         "model_version": "v2",
+        "include_points": True,
     }
     reader.side_effect = ValueError("private details")
     response = client.get(path)

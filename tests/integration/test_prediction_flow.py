@@ -130,7 +130,7 @@ def test_durable_shadow_retry_survives_failure_and_saves_once(monkeypatch):
 
 def request(payload):
     query = urllib.request.Request(
-        "http://frontend/api/predict",
+        "http://frontend:8080/api/predict",
         data=json.dumps(payload).encode(),
         headers={
             "Content-Type": "application/json",
@@ -242,7 +242,7 @@ def test_authenticated_prediction_flow():
         user_id = user.id
     try:
         query = urllib.request.Request(
-            "http://frontend/api/auth/login",
+            "http://frontend:8080/api/auth/login",
             data=json.dumps({"username": username, "password": password}).encode(),
             headers={
                 "Content-Type": "application/json",
@@ -255,12 +255,72 @@ def test_authenticated_prediction_flow():
             assert cookie["dp_session"]["httponly"]
             TOKEN = cookie["dp_session"].value
             CSRF = json.load(response)["csrf_token"]
-        with urllib.request.urlopen("http://frontend/", timeout=20) as response:
+        with urllib.request.urlopen("http://frontend:8080/", timeout=20) as response:
             assert "Diabetes Predict" in response.read().decode()
         check_prediction_flow()
+        check_demo_load()
     finally:
         with factory() as db:
             db.get(User, user_id).is_active = False
             db.commit()
         TOKEN = None
         CSRF = None
+
+
+def check_demo_load():
+    """Small synthetic demo workload; verify accepted jobs are durably delivered."""
+
+    def submit(index):
+        payload = dict(
+            patient_code=f"LOD{index:03d}",
+            study_date="2026-09-11",
+            pregnancies=0,
+            glucose=100 + index,
+            blood_pressure=70,
+            skin_thickness=20,
+            insulin=0,
+            bmi=25,
+            diabetes_pedigree_function=0.5,
+            age=40,
+        )
+        started = time.monotonic()
+        try:
+            request(payload)
+            status = 200
+        except urllib.error.HTTPError as error:
+            status = error.code
+        return index, status, time.monotonic() - started
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(submit, range(24)))
+    assert all(status in (200, 429, 503) for _, status, _ in results)
+    accepted = [f"LOD{index:03d}" for index, status, _ in results if status == 200]
+    assert accepted
+    with urllib.request.urlopen(
+        "http://frontend:8080/api/db/health", timeout=5
+    ) as response:
+        assert response.status == 200
+    deadline = time.monotonic() + 60
+    while True:
+        with get_session_factory()() as db:
+            active = set(
+                db.scalars(
+                    select(ModelVersion.id).where(
+                        ModelVersion.role.in_(["champion", "challenger"])
+                    )
+                )
+            )
+            records = db.execute(
+                select(Study.patient_code, PredictionHistory.model_version_id)
+                .join(PredictionHistory)
+                .where(Study.patient_code.in_(accepted))
+            ).all()
+        if set(records) == {
+            (patient, model) for patient in accepted for model in active
+        }:
+            break
+        assert time.monotonic() < deadline, (
+            "Accepted workload was not durably processed"
+        )
+        time.sleep(1)
+    assert max(duration for _, _, duration in results) < 20

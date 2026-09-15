@@ -1,0 +1,28 @@
+# Applied by start_stack --vault-tls. Never supply a CA through an image layer.
+services:
+  vault:
+    volumes:
+      - ./vault/server-tls.hcl:/vault/config/server.hcl:ro
+      - vault_tls:/vault/tls:ro
+    healthcheck:
+      test: ["CMD-SHELL", "VAULT_ADDR=https://127.0.0.1:8200 VAULT_CACERT=/vault/tls/ca.crt vault status >/dev/null 2>&1"]
+  diabetes-api:
+    environment:
+      VAULT_ADDR: https://vault:8200
+      VAULT_CACERT: /run/vault/ca.crt
+    volumes:
+      - ${VAULT_CA_FILE:?TLS bootstrap required}:/run/vault/ca.crt:ro
+  kafka-consumer:
+    environment:
+      VAULT_ADDR: https://vault:8200
+      VAULT_CACERT: /run/vault/ca.crt
+    volumes:
+      - ${VAULT_CA_FILE:?TLS bootstrap required}:/run/vault/ca.crt:ro
+  metrics-exporter:
+    environment:
+      VAULT_ADDR: https://vault:8200
+      VAULT_CACERT: /run/vault/ca.crt
+    volumes:
+      - ${VAULT_CA_FILE:?TLS bootstrap required}:/run/vault/ca.crt:ro
+volumes:
+  vault_tls:

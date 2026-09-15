@@ -1,14 +1,11 @@
 import math
 from datetime import date
-from unittest.mock import MagicMock
 
 import pytest
-from prometheus_client import CollectorRegistry, generate_latest
 from sqlalchemy import JSON, Column, Float, MetaData, Table, create_engine
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
-from src import model_health_exporter
 from src.db.models import (
     ModelVersion,
     PredictionFeedback,
@@ -248,93 +245,3 @@ def test_histograms_count_every_value_once_and_distinguish_null_from_zero():
 def test_constant_baseline_detects_shift_beyond_its_maximum():
     # Категории: NULL, отсутствующий замер, ниже, равен, выше эталона.
     assert population_stability_index([0, 0, 0, 100, 0], [0, 0, 0, 0, 100]) > 0.25
-
-
-def test_monthly_exporter_drops_previous_values_after_collection_failure(monkeypatch):
-    from src.features import FEATURE_COLUMNS
-
-    snapshot = {
-        "start": date(2026, 8, 11),
-        "end": date(2026, 9, 10),
-        "reference": None,
-        "quality": {"samples": 0}
-        | {
-            name + "_" + kind: 0
-            for name in FEATURE_COLUMNS
-            for kind in ("zeros", "missing")
-        },
-    }
-    monkeypatch.setattr(model_health_exporter, "get_session_factory", MagicMock())
-    monkeypatch.setattr(
-        model_health_exporter,
-        "read_model_health_snapshots",
-        MagicMock(side_effect=[[snapshot], RuntimeError("private credentials")]),
-    )
-    registry = CollectorRegistry()
-    registry.register(model_health_exporter.ModelHealthCollector())
-    first = generate_latest(registry).decode()
-    assert "diabetes_model_health_studies 0.0" in first
-    assert "diabetes_model_health_reference_available 0.0" in first
-    assert "diabetes_model_health_feature_psi{" not in first
-    assert 'diabetes_model_health_feature_zeros{feature="pregnancies"}' not in first
-    failed = generate_latest(registry).decode()
-    assert "diabetes_model_health_collection_success 0.0" in failed
-    assert "diabetes_model_health_studies" not in failed
-    assert "private credentials" not in failed
-
-
-def test_exporter_keeps_separate_reference_and_values_for_each_model(monkeypatch):
-    from src.features import FEATURE_COLUMNS
-
-    snapshots = []
-    for version, role, samples, shift in [
-        ("release-a-m1", "champion", 536, 0.1),
-        ("release-b-m2", "challenger", 800, 0.2),
-    ]:
-        snapshots.append(
-            {
-                "start": date(2026, 8, 11),
-                "end": date(2026, 9, 10),
-                "quality": {"samples": 200}
-                | {
-                    feature + "_" + kind: 0
-                    for feature in FEATURE_COLUMNS
-                    for kind in ("zeros", "missing")
-                },
-                "reference": {
-                    "version": version,
-                    "role": role,
-                    "dataset_id": samples,
-                    "samples": samples,
-                },
-                "current_samples": 200,
-                "labeled": 150,
-                "positive_rate": 0.4,
-                "reference_positive_rate": 0.4 - shift,
-                "target_shift": shift,
-                "evaluated": 150,
-                "accuracy": 0.8,
-                "drift": dict.fromkeys(FEATURE_COLUMNS, shift),
-                "classification": classification_metrics(40, 80, 10, 20),
-                "confusion": {"tp": 40, "tn": 80, "fp": 10, "fn": 20},
-            }
-        )
-    monkeypatch.setattr(model_health_exporter, "get_session_factory", MagicMock())
-    monkeypatch.setattr(
-        model_health_exporter, "read_model_health_snapshots", lambda db: snapshots
-    )
-    families = {
-        family.name: family
-        for family in model_health_exporter.ModelHealthCollector().collect()
-    }
-    for name, expected in [
-        ("reference_samples", [536, 800]),
-        ("target_shift", [0.1, 0.2]),
-    ]:
-        samples = families["diabetes_model_health_" + name].samples
-        assert [sample.value for sample in samples] == expected
-        assert [sample.labels["version"] for sample in samples] == [
-            "release-a-m1",
-            "release-b-m2",
-        ]
-    assert len(families["diabetes_model_health_feature_psi"].samples) == 16

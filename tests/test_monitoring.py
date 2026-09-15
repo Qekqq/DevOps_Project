@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from prometheus_client import CollectorRegistry, generate_latest
+from prometheus_client import generate_latest
 
 from src import metrics_exporter, monitoring
 from src.auth import current_user
@@ -39,21 +39,25 @@ def test_grafana_access_requires_admin(role, status):
             assert response.headers["X-Monitoring-User"] == "user-7"
 
 
-def test_exporter_does_not_reuse_previous_metrics_on_failure(monkeypatch):
-    monkeypatch.setattr(metrics_exporter, "get_session_factory", MagicMock())
-    snapshot = {"studies": 8, "feedback": 5, "cohort": 4, "models": []}
-    monkeypatch.setattr(
-        metrics_exporter,
-        "read_quality_snapshot",
-        MagicMock(side_effect=[snapshot, RuntimeError("unavailable")]),
-    )
-    registry = CollectorRegistry()
-    registry.register(metrics_exporter.QualityCollector())
-    first = generate_latest(registry).decode()
-    assert "diabetes_cohort 4.0" in first
-    failed = generate_latest(registry).decode()
-    assert "diabetes_quality_collection_success 0.0" in failed
-    assert "diabetes_cohort" not in failed
+def test_exporter_registers_only_technical_metrics(monkeypatch):
+    from prometheus_client.core import GaugeMetricFamily
+
+    class TechnicalCollector:
+        def collect(self):
+            yield GaugeMetricFamily(
+                "diabetes_container_memory_bytes", "Memory", value=1
+            )
+
+    server = MagicMock()
+    monkeypatch.setattr(metrics_exporter, "ContainerCollector", TechnicalCollector)
+    monkeypatch.setattr(metrics_exporter, "configure_diagnostics", lambda: None)
+    monkeypatch.setattr(metrics_exporter, "start_http_server", server)
+    monkeypatch.setattr(metrics_exporter.threading, "Event", MagicMock())
+    metrics_exporter.main()
+    output = generate_latest(server.call_args.kwargs["registry"]).decode()
+    assert "diabetes_container_memory_bytes 1.0" in output
+    assert "diabetes_quality" not in output
+    assert "diabetes_model_health" not in output
 
 
 def test_report_matches_sklearn_on_expanded_observations():

@@ -1,6 +1,7 @@
 """Качество каждой активной модели по её прогнозам с фактическим исходом."""
 
 from datetime import date, timedelta
+from threading import BoundedSemaphore
 from typing import Literal
 
 import numpy as np
@@ -18,10 +19,54 @@ from src.db.models import (
     Study,
     User,
 )
+from src.ml_monitoring import ReportInputError, read_report
 from src.model_health import month_window
 from src.model_health_history import period_buckets, read_model_health_history
 
 router = APIRouter(prefix="/monitoring", tags=["Мониторинг"])
+history_slots = BoundedSemaphore(2)
+report_slots = BoundedSemaphore(1)
+
+
+@router.get(
+    "/model-report", summary="Качество и drift по времени прогноза или исследования"
+)
+def model_report(
+    response: Response,
+    user: User = Depends(require_admin),
+    model_version: str | None = Query(default=None, min_length=1, max_length=50),
+    date_from: date | None = None,
+    date_to: date | None = None,
+    time_axis: Literal["prediction_time", "study_date"] = "prediction_time",
+    resolution: Literal["day", "week", "month"] = "month",
+):
+    response.headers["Cache-Control"] = "no-store"
+    if not report_slots.acquire(blocking=False):
+        raise HTTPException(503, "Расчёт уже выполняется; повторите запрос позже")
+    try:
+        with get_session_factory()() as db:
+            db.execute(
+                text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            )
+            db.execute(text("SET LOCAL statement_timeout = '5s'"))
+            return read_report(
+                db,
+                model_version=model_version,
+                date_from=date_from,
+                date_to=date_to,
+                time_axis=time_axis,
+                resolution=resolution,
+            )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from None
+    except ReportInputError as exc:
+        raise HTTPException(422, str(exc)) from None
+    except TimeoutError as exc:
+        raise HTTPException(503, str(exc)) from None
+    except (SQLAlchemyError, ValueError):
+        raise HTTPException(503, "Не удалось рассчитать отчёт мониторинга") from None
+    finally:
+        report_slots.release()
 
 
 def quality_report(tp, fn, fp, tn):
@@ -60,6 +105,7 @@ def model_health_history(
     date_to: date | None = None,
     group_by: Literal["day", "month"] = "day",
     model_version: str | None = Query(default=None, min_length=1, max_length=50),
+    include_points: bool = True,
 ):
     if date_from is None and date_to is None:
         date_from, end = month_window()
@@ -71,6 +117,8 @@ def model_health_history(
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from None
     response.headers["Cache-Control"] = "no-store"
+    if not history_slots.acquire(blocking=False):
+        raise HTTPException(503, "Расчёт метрик занят; повторите запрос позже")
     try:
         # Отдельная сессия: авторизация уже читала БД в своей транзакции.
         with get_session_factory()() as db:
@@ -84,6 +132,7 @@ def model_health_history(
                 date_to=date_to,
                 group_by=group_by,
                 model_version=model_version,
+                include_points=include_points,
             )
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from None
@@ -93,6 +142,8 @@ def model_health_history(
         raise HTTPException(
             503, "Не удалось рассчитать метрики; проверьте БД и обучающий эталон модели"
         ) from None
+    finally:
+        history_slots.release()
 
 
 def read_quality_snapshot(db):

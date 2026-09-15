@@ -24,7 +24,7 @@ def test_app_uses_approle_without_root_token(monkeypatch):
     factory = MagicMock()
     monkeypatch.setattr(vault_client.hvac, "Client", factory)
     client = vault_client.get_vault_client()
-    factory.assert_called_once_with(url="http://vault:8200")
+    factory.assert_called_once_with(url="http://vault:8200", timeout=10, verify=True)
     client.auth.approle.login.assert_called_once_with(
         role_id="api-role", secret_id="api-secret"
     )

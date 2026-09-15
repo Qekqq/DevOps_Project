@@ -2,6 +2,7 @@
 
 import math
 from hashlib import sha256
+from io import BytesIO
 from pathlib import Path
 from threading import Lock
 
@@ -74,7 +75,7 @@ class ModelRegistry:
             raise ValueError("Неподдерживаемый формат модели")
         root = get_project_root().resolve()
         path = (root / Path(artifact_path)).resolve()
-        if not path.is_relative_to(root):
+        if not path.is_relative_to(root / "models"):
             raise ValueError("Файл модели должен находиться внутри проекта")
         signature = (str(path), artifact_sha256, artifact_format)
         with self._lock:
@@ -85,10 +86,12 @@ class ModelRegistry:
                         "Для существующей версии изменены файл или предобработка; зарегистрируйте новую версию"
                     )
                 return predictor
-            if sha256(path.read_bytes()).hexdigest() != artifact_sha256:
+            artifact = path.read_bytes()
+            if sha256(artifact).hexdigest() != artifact_sha256:
                 raise ValueError(
                     "Контрольная сумма файла модели не совпадает с реестром"
                 )
-            predictor = PipelinePredictor(joblib.load(path), version)
+            # Deserialize exactly the bytes checked, with no second file read.
+            predictor = PipelinePredictor(joblib.load(BytesIO(artifact)), version)
             self._cache[version] = (signature, predictor)
             return predictor

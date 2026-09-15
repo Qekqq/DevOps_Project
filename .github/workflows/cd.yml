@@ -61,7 +61,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: python -m pip install hvac==2.4.0 requests==2.34.2 pytest==9.0.3
+      - run: python -m pip install -r requirements.txt
+      - name: Закрытая загрузка моделей проверяемого коммита
+        env:
+          DVC_YANDEX_USER: ${{ secrets.DVC_YANDEX_USER }}
+          DVC_YANDEX_PASSWORD: ${{ secrets.DVC_YANDEX_PASSWORD }}
+        run: python -m scripts.fetch_models
       - uses: actions/download-artifact@v4
         with:
           name: release-${{ steps.release.outputs.sha }}
@@ -77,36 +82,35 @@ jobs:
       - uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          password: ${{ secrets.DOCKERHUB_READ_TOKEN }}
       - name: Получение проверенных образов
         run: docker compose -f release/docker-compose.json pull
       - name: Запуск и интеграционные проверки
-        run: python -m scripts.start_stack --ci --no-build --check --release-dir release
+        run: python -m scripts.start_stack --ci --vault-tls --file-secrets --project devops_verify --no-build --check --release-dir release
       - name: Диагностика сервисов
         if: failure()
         run: |
-          docker compose -f release/docker-compose.json ps -a
-          docker compose -f release/docker-compose.json logs --tail=100 diabetes-api kafka-consumer metrics-exporter frontend
+          docker compose -p devops_verify -f release/docker-compose.json ps -a
+          docker compose -p devops_verify -f release/docker-compose.json logs --tail=100 diabetes-api kafka-consumer metrics-exporter frontend docker-stats docker-proxy
       - name: Удаление только одноразового тестового окружения
         if: always()
         run: |
           if [ -f release/docker-compose.json ]; then
-            docker compose -f release/docker-compose.json down -v
+            docker compose -p devops_verify -f release/docker-compose.json down -v
           fi
+          # Includes TLS/AppRole volumes from a partially completed bootstrap.
+          docker volume ls -q --filter label=com.docker.compose.project=devops_verify | xargs -r docker volume rm
 
   deploy:
     name: Обновление постоянного приложения
     needs: verify-release
-    runs-on: [self-hosted, Windows, X64, devops-production]
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: production
     env:
       PYTHONUTF8: "1"
       PYTHONIOENCODING: utf-8
       PYTHONUNBUFFERED: "1"
-    defaults:
-      run:
-        shell: powershell
     steps:
       - name: Проверка актуальности main перед выкладкой
         uses: actions/github-script@v7
@@ -120,46 +124,39 @@ jobs:
         with:
           ref: ${{ needs.verify-release.outputs.sha }}
           persist-credentials: false
-      - name: Проверка установленного Python без изменения Windows
-        # Keep Windows PowerShell run blocks ASCII: runner writes UTF-8 without BOM.
-        run: |
-          $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-          if (-not $env:DEVOPS_DEPLOY_HOME) { throw 'Runner is not configured: DEVOPS_DEPLOY_HOME is missing' }
-          $deploymentPython = $env:DEVOPS_PYTHON
-          if (-not $deploymentPython) {
-            $projectRoot = Split-Path (Split-Path $env:DEVOPS_DEPLOY_HOME -Parent) -Parent
-            $deploymentPython = Join-Path $projectRoot '.venv\Scripts\python.exe'
-          }
-          if (-not (Test-Path -LiteralPath $deploymentPython -PathType Leaf)) {
-            throw 'Python was not found. Restore .venv or set DEVOPS_PYTHON before starting the runner.'
-          }
-          & $deploymentPython -c "import sys; assert sys.version_info >= (3, 11), 'Python 3.11+ is required'; print(sys.version)"
-          if ($LASTEXITCODE -ne 0) { throw 'Installed Python failed to start; deployment stopped.' }
-          "DEPLOY_PYTHON=$deploymentPython" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Установка клиента закрытого хранилища моделей
+        run: python -m pip install 'dvc[webdav]==3.67.1'
+      - name: Получение моделей из закрытого DVC-хранилища
+        env:
+          DVC_YANDEX_USER: ${{ secrets.DVC_YANDEX_USER }}
+          DVC_YANDEX_PASSWORD: ${{ secrets.DVC_YANDEX_PASSWORD }}
+        run: python -m scripts.fetch_models
       - uses: actions/download-artifact@v4
         with:
           name: release-${{ needs.verify-release.outputs.sha }}
           path: release
           github-token: ${{ github.token }}
           run-id: ${{ needs.verify-release.outputs.run_id }}
-      - uses: docker/login-action@v3
+      - name: Выкладка проверенного выпуска на VPS по SSH
+        env:
+          RELEASE_SHA: ${{ needs.verify-release.outputs.sha }}
+          CI_RUN_ID: ${{ needs.verify-release.outputs.run_id }}
+          VPS_HOST: ${{ vars.VPS_HOST }}
+          VPS_USER: ${{ vars.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_SSH_KNOWN_HOSTS: ${{ secrets.VPS_SSH_KNOWN_HOSTS }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_READ_TOKEN: ${{ secrets.DOCKERHUB_READ_TOKEN }}
+        run: python -m scripts.deploy_vps --release release --commit "$RELEASE_SHA" --ci-run "$CI_RUN_ID"
+      - name: Сохранение состава установленного выпуска для повторного сканирования
+        uses: actions/upload-artifact@v4
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - name: Проверка локальной готовности без обновления приложения
-        env:
-          RELEASE_SHA: ${{ needs.verify-release.outputs.sha }}
-          CI_RUN_ID: ${{ needs.verify-release.outputs.run_id }}
-        run: |
-          $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-          & $env:DEPLOY_PYTHON -m scripts.deploy_release --release release --commit $env:RELEASE_SHA --ci-run $env:CI_RUN_ID --preflight
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Выкладка без локальной сборки
-        env:
-          RELEASE_SHA: ${{ needs.verify-release.outputs.sha }}
-          CI_RUN_ID: ${{ needs.verify-release.outputs.run_id }}
-        run: |
-          $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-          if (-not $env:DEVOPS_DEPLOY_HOME) { throw 'Runner is not configured: DEVOPS_DEPLOY_HOME is missing' }
-          & $env:DEPLOY_PYTHON -m scripts.deploy_release --release release --commit $env:RELEASE_SHA --ci-run $env:CI_RUN_ID
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          name: deployed-release
+          path: |
+            release/docker-compose.json
+            release/release.json
+          retention-days: 90
+          if-no-files-found: error

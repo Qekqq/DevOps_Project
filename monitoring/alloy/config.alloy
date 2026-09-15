@@ -2,48 +2,6 @@ logging {
   level = "warn"
 }
 
-// CPU и память всех контейнеров текущего Compose-проекта.
-prometheus.exporter.cadvisor "containers" {
-  docker_only = true
-  disable_root_cgroup_stats = true
-  enabled_metrics = ["cpu", "memory"]
-  store_container_labels = false
-  allowlisted_container_labels = [
-    "com.docker.compose.project",
-    "com.docker.compose.service",
-  ]
-}
-
-prometheus.scrape "containers" {
-  targets = prometheus.exporter.cadvisor.containers.targets
-  scrape_interval = "30s"
-  forward_to = [prometheus.relabel.containers.receiver]
-}
-
-prometheus.relabel "containers" {
-  forward_to = [prometheus.remote_write.local.receiver]
-
-  rule {
-    source_labels = ["container_label_com_docker_compose_project"]
-    regex = sys.env("COMPOSE_PROJECT_NAME")
-    action = "keep"
-  }
-  rule {
-    source_labels = ["container_label_com_docker_compose_service"]
-    target_label = "service"
-  }
-  rule {
-    target_label = "job"
-    replacement = "docker-containers"
-  }
-}
-
-prometheus.remote_write "local" {
-  endpoint {
-    url = "http://prometheus:9090/api/v1/write"
-  }
-}
-
 loki.source.file "application" {
   targets = [{ __path__ = "/app/logs/*.jsonl", job = "diabetes" }]
   file_match {
