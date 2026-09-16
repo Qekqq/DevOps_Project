@@ -105,6 +105,7 @@ def study_history(
     has_feedback = (
         select(PredictionFeedback.id)
         .where(PredictionFeedback.study_id == Study.id)
+        .correlate(Study)
         .exists()
     )
     if feedback != "all":

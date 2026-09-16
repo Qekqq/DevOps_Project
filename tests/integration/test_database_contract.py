@@ -4,7 +4,10 @@ import json
 from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
+import pytest
+from fastapi import Response
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError
 
@@ -22,6 +25,74 @@ from src.db.models import (
 )
 from src.db.repositories import save_prediction_feedback
 from src.feedback_dataset import read_confirmed_studies, save_snapshot
+from src.studies import study_history
+
+
+@pytest.mark.parametrize("feedback", ["all", "missing", "filled"])
+@pytest.mark.parametrize("model", ["champion", "all"])
+def test_history_feedback_filters(feedback, model):
+    with get_session_factory()() as db:
+        try:
+            records = []
+            for number, label in enumerate((0, 1, None), start=1):
+                study = Study(
+                    patient_code=f"HFB{number:03d}",
+                    study_date=date(2026, 7, number),
+                    features=dict(
+                        pregnancies=0,
+                        glucose=120,
+                        blood_pressure=70,
+                        skin_thickness=20,
+                        insulin=0,
+                        bmi=30,
+                        diabetes_pedigree_function=0.5,
+                        age=40,
+                    ),
+                )
+                db.add(study)
+                db.flush()
+                if label is not None:
+                    save_prediction_feedback(db, study_id=study.id, true_label=label)
+                records.append((study.id, label))
+
+            def history(**overrides):
+                arguments = dict(
+                    patient="HFB",
+                    date_from=date(2026, 7, 1),
+                    date_to=date(2026, 7, 3),
+                    feedback=feedback,
+                    model=[model],
+                    page=1,
+                    page_size=100,
+                )
+                arguments.update(overrides)
+                return study_history(
+                    Response(), user=SimpleNamespace(role="admin"), db=db, **arguments
+                )
+
+            expected = {
+                study_id: label
+                for study_id, label in records
+                if feedback == "all" or (label is None) == (feedback == "missing")
+            }
+            result = history()
+            assert {row["id"]: row["feedback"] for row in result["items"]} == expected
+            assert result["study_total"] == len(expected)
+            assert result["filled"] == sum(
+                label is not None for label in expected.values()
+            )
+            assert result["total"] == len(result["items"])
+            page = history(page=2, page_size=1)
+            assert page["items"] == result["items"][page["page"] - 1 : page["page"]]
+            narrowed = history(date_from=date(2026, 7, 2))
+            assert {row["id"] for row in narrowed["items"]} == set(expected) - {
+                records[0][0]
+            }
+            empty = history(patient="HFB999")
+            assert empty["items"] == []
+            assert empty["total"] == empty["study_total"] == empty["filled"] == 0
+        finally:
+            db.rollback()
 
 
 def test_database_contract():

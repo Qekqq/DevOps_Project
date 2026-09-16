@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy.dialects import postgresql
 
 from src import studies
 from src.auth import current_user
@@ -98,6 +99,28 @@ def test_history_returns_database_rows(setup):
     assert data["items"][0]["patient"] == study.patient_code
     assert data["items"][0]["feedback"] == 0
     assert data["items"][0]["model"]["prediction"] is None
+
+
+@pytest.mark.parametrize("feedback", ["all", "missing", "filled"])
+def test_history_feedback_queries_compile_for_postgresql(setup, feedback):
+    client, user, _, db = setup
+    user.role = "admin"
+    model = SimpleNamespace(id=1, role="champion", model_name="LR", model_version="lr1")
+    db.scalars.return_value.all.return_value = [model]
+
+    def count(statement):
+        statement.compile(dialect=postgresql.dialect())
+        return 0
+
+    def rows(statement):
+        statement.compile(dialect=postgresql.dialect())
+        return SimpleNamespace(all=lambda: [])
+
+    db.scalar.side_effect = count
+    db.execute.side_effect = rows
+    response = client.get(f"/studies?feedback={feedback}")
+    assert response.status_code == 200
+    assert response.json()["items"] == []
 
 
 def test_history_rejects_reversed_period(setup):
